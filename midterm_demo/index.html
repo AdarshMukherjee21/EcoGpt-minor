@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>LLM & Green Metric Tester</title>
+</head>
+<body>
+
+    <h1>LLM & Green Metric API Tester</h1>
+    <hr>
+
+    <!-- SCREEN 1: ROUTER -->
+    <h2>Screen 1: Router Screen (Smart Routing & Emissions Comparison)</h2>
+    <p>Given a prompt, route to the appropriate model. If routed to the small model, it automatically computes small vs. large model emissions and savings.</p>
+    <div>
+        <label for="router-prompt"><strong>Prompt:</strong></label><br>
+        <textarea id="router-prompt" rows="4" cols="70">An investor purchases a 10-year government bond with a face value of ₹10,000 at a price of ₹9,600. The bond pays an annual coupon of 7% on face value. After one year, the bond is sold for ₹9,850. If inflation during the year was 5.5%, calculate the investor’s nominal holding-period return and approximate real return.</textarea>
+        <br><br>
+        <button onclick="testRouter()">Route & Calculate Router Savings</button>
+    </div>
+    <h3>Router Response & Savings Output:</h3>
+    <pre id="router-output">Awaiting execution...</pre>
+
+    <hr>
+
+    <!-- SCREEN 2: GREEN METRICS & COMPRESSION -->
+    <h2>Screen 2: Green Metric & Prompt Compression Screen</h2>
+    <p>Select a model, compress the prompt, run pre- and post-compression outputs, and calculate environmental impact savings.</p>
+    <div>
+        <label for="green-prompt"><strong>Prompt:</strong></label><br>
+        <textarea id="green-prompt" rows="4" cols="70">An investor purchases a 10-year government bond with a face value of ₹10,000 at a price of ₹9,600. The bond pays an annual coupon of 7% on face value. After one year, the bond is sold for ₹9,850. If inflation during the year was 5.5%, calculate the investor’s nominal holding-period return and approximate real return.</textarea>
+        <br><br>
+
+        <label for="model-select"><strong>Select Model for Run:</strong></label>
+        <select id="model-select">
+            <option value="ollama/qwen2.5:3b">ollama/qwen2.5:3b (Weak Model)</option>
+            <option value="ollama/gpt-oss:120b-cloud">ollama/gpt-oss:120b-cloud (Strong Model)</option>
+        </select>
+        <br><br>
+
+        <label for="target-rate"><strong>Target Compression Rate:</strong></label>
+        <input type="number" id="target-rate" value="0.7" step="0.1" min="0.1" max="1.0">
+        <br><br>
+
+        <button onclick="testCompress()">Run Compression & Calculate Pre/Post Green Metrics</button>
+    </div>
+
+    <h3>Compression & Green Metrics Output:</h3>
+    <pre id="green-output">Awaiting execution...</pre>
+
+    <hr>
+
+    <!-- INDIVIDUAL ENDPOINT QUICK TESTERS -->
+    <h2>Quick Endpoint Testers</h2>
+
+    <!-- Raw Runner Endpoint -->
+    <fieldset>
+        <legend>POST /api/raw-runner</legend>
+        <label>Model: <input type="text" id="raw-model-input" value="ollama/qwen2.5:3b"></label><br><br>
+        <label>Prompt: <input type="text" id="raw-prompt-input" value="What is carbon footprint?"></label><br><br>
+        <button onclick="quickRawRunner()">Test Raw Runner Endpoint</button>
+        <pre id="raw-runner-res"></pre>
+    </fieldset>
+
+    <br>
+
+    <!-- Standalone Green Metric Endpoint -->
+    <fieldset>
+        <legend>POST /api/green-metric</legend>
+        <label>Model: <input type="text" id="gm-model-input" value="ollama/qwen2.5:3b"></label><br><br>
+        <label>Input Prompt: <input type="text" id="gm-input-prompt" value="Calculate return on investment"></label><br><br>
+        <label>Output Text: <input type="text" id="gm-output-text" value="The calculated ROI is 8.5%"></label><br><br>
+        <button onclick="quickGreenMetric()">Test Green Metric Endpoint</button>
+        <pre id="gm-res"></pre>
+    </fieldset>
+
+    <script>
+        const API_BASE = "http://localhost:5000/api";
+
+        // Safe API request helper to prevent JSON parsing crashes on 500 HTML responses
+        async function sendAPIRequest(endpoint, payload) {
+            try {
+                const response = await fetch(`${API_BASE}${endpoint}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const rawText = await response.text();
+                let parsedData;
+
+                try {
+                    parsedData = JSON.parse(rawText);
+                } catch (jsonErr) {
+                    return `[HTTP ${response.status} Error - Server did not return valid JSON]\n\nResponse Body:\n${rawText}`;
+                }
+
+                if (!response.ok) {
+                    return `[HTTP ${response.status} Error]\n${JSON.stringify(parsedData, null, 2)}`;
+                }
+
+                return JSON.stringify(parsedData, null, 2);
+            } catch (networkErr) {
+                return `[Network / Connection Error]\nCould not connect to ${API_BASE}${endpoint}.\nDetails: ${networkErr.message}`;
+            }
+        }
+
+        // SCREEN 1: ROUTER
+        async function testRouter() {
+            const prompt = document.getElementById('router-prompt').value;
+            const outputEl = document.getElementById('router-output');
+            outputEl.innerText = "Routing prompt and calculating model emissions comparison...";
+
+            const result = await sendAPIRequest('/router', { prompt });
+            outputEl.innerText = result;
+        }
+
+        // SCREEN 2: COMPRESS & GREEN METRIC COMPARISON
+        async function testCompress() {
+            const prompt = document.getElementById('green-prompt').value;
+            const model = document.getElementById('model-select').value;
+            const target_rate = parseFloat(document.getElementById('target-rate').value);
+            const outputEl = document.getElementById('green-output');
+            
+            outputEl.innerText = "Compressing prompt, running raw outputs, and computing green metrics...";
+
+            const result = await sendAPIRequest('/compress', { prompt, model, target_rate });
+            outputEl.innerText = result;
+        }
+
+        // QUICK RAW RUNNER TEST
+        async function quickRawRunner() {
+            const model = document.getElementById('raw-model-input').value;
+            const prompt = document.getElementById('raw-prompt-input').value;
+            const resEl = document.getElementById('raw-runner-res');
+            resEl.innerText = "Executing...";
+
+            const result = await sendAPIRequest('/raw-runner', { model, prompt });
+            resEl.innerText = result;
+        }
+
+        // QUICK GREEN METRIC TEST
+        async function quickGreenMetric() {
+            const model = document.getElementById('gm-model-input').value;
+            const input_prompt = document.getElementById('gm-input-prompt').value;
+            const output_text = document.getElementById('gm-output-text').value;
+            const resEl = document.getElementById('gm-res');
+            resEl.innerText = "Calculating...";
+
+            const result = await sendAPIRequest('/green-metric', { model, input_prompt, output_text });
+            resEl.innerText = result;
+        }
+    </script>
+</body>
+</html>
