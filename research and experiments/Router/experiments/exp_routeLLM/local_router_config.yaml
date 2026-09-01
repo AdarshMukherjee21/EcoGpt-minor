@@ -1,0 +1,2 @@
+data_path:
+  llm_data: LLMRouter/data/llm_candidates/default_llm.json
