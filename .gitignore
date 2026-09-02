@@ -1,1 +1,41 @@
-\.kilo/
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
+
+# Local config (keep the example, ignore the real file)
+.env
+
+# RouteLLM runtime artifacts (large files, regenerable)
+RouteLLM/router_models/
+RouteLLM/data/
+*.bin
+*.pt
+*.safetensors
+
+# Jupyter
+.ipynb_checkpoints/

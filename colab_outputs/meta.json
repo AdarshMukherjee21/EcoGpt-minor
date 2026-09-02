@@ -1,0 +1,9 @@
+{
+  "embedder": "sentence-transformers/all-MiniLM-L6-v2",
+  "text_dim": 384,
+  "dim": 128,
+  "num_prompts": 55361,
+  "best_val_acc": 0.6356508102456874,
+  "num_train": 36328,
+  "num_test": 1913
+}

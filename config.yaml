@@ -1,0 +1,96 @@
+# ecoGPT — non-secret configuration
+# All API keys live in .env. Each model references its key by env-var name
+# (api_key_env), so you can use different providers/keys for small vs large.
+
+project:
+  name: ecoGPT
+  host: 0.0.0.0
+  port: 5000
+
+# ---------------------------------------------------------------------------
+# Models — reached over OpenAI-compatible HTTP (no Ollama-native calls).
+# api_base must end in /v1 (or equivalent) and serve /v1/chat/completions.
+# Examples that all work out of the box:
+#   - http://localhost:11434/v1        (Ollama with OPENAI_COMPAT enabled)
+#   - http://localhost:8000/v1         (vLLM)
+#   - http://localhost:1234/v1         (LM Studio)
+#   - https://api.openai.com/v1
+#   - https://api.together.xyz/v1
+#   - https://api.groq.com/openai/v1
+# ---------------------------------------------------------------------------
+models:
+  small:
+    name: gpt-oss:20b-cloud
+    api_base: https://ollama.com/v1/
+    api_key_env: SMALL_MODEL_API_KEY
+  large:
+    name: gpt-oss:120b-cloud
+    api_base: https://ollama.com/v1/
+    api_key_env: LARGE_MODEL_API_KEY
+
+# ---------------------------------------------------------------------------
+# Smart router (Microsoft RouteLLM)
+# ---------------------------------------------------------------------------
+router:
+  type: mf # mf | bert
+  threshold: 0.1159
+  # Embedding model for the MF router. "sentence-transformers" runs locally
+  # (no API key needed); "openai" uses the OPENAI_API_KEY env var.
+  embedding:
+    provider: sentence-transformers
+    model_name: sentence-transformers/all-MiniLM-L6-v2
+    device: auto # auto | cpu | cuda
+  # Per-model overrides: if the routed model matches a key, use these values
+  # instead of falling through to HHAI bands in green_metric.py.
+  # Example:
+  #   per_model_overrides:
+  #     "qwen2.5:3b":
+  #       gpu_count: 1
+  #       tps: 18000
+  #       max_power_kw: 1.275
+  per_model_overrides: {}
+
+# ---------------------------------------------------------------------------
+# Prompt compression (LLMLingua-2)
+# device: "auto" -> CUDA if available, else CPU
+#         "cpu"  -> always CPU
+#         "cuda" -> require CUDA, fail at startup if not present
+# ---------------------------------------------------------------------------
+compression:
+  model_name: microsoft/llmlingua-2-bert-base-multilingual-cased-meetingbank
+  device: auto
+  target_rate: 0.7
+
+# ---------------------------------------------------------------------------
+# Raw model runner — provider-agnostic OpenAI-compatible client
+# ---------------------------------------------------------------------------
+raw_runner:
+  timeout_seconds: 120
+  # Optional fields forwarded to every chat completion call.
+  # Common keys: temperature, max_tokens, top_p, frequency_penalty, etc.
+  request_defaults: {}
+
+# ---------------------------------------------------------------------------
+# Green-metric estimator tunables
+# HHAI bands (Nano/Micro/Small/Medium/Large) remain the fallback classifier
+# for any model tag not listed in per_model_overrides (see router above).
+# ---------------------------------------------------------------------------
+green_metric:
+  carbon_intensity_kg_per_kwh: 0.3528
+  # WUE = Water Usage Effectiveness. L of site cooling water per kWh of IT
+  # energy. ~1.2 L/kWh is a reasonable U.S. average; hyperscale DCs can be
+  # near 0, while older on-prem water-cooled sites can exceed 2.
+  wue_l_per_kwh: 1.2
+  monte_carlo_samples: 10000
+  random_seed: 42
+  h100_8gpu_max_power_kw: 10.2
+  power_p5_fraction: 0.40
+  power_p95_fraction: 0.90
+  pue_p5: 1.05
+  pue_p95: 1.40
+  class_gpu_count:
+    Nano: 1
+    Micro: 1
+    Small: 2
+    Medium: 4
+    Large: 8

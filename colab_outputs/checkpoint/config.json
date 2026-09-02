@@ -1,0 +1,9 @@
+{
+  "_name_or_path": "local-minilm-mf",
+  "_format": "minilm-mf",
+  "_embedder": "sentence-transformers/all-MiniLM-L6-v2",
+  "_dim": 128,
+  "_text_dim": 384,
+  "_num_models": 64,
+  "_num_classes": 1
+}
