@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EcoGPT — Green LLM Demo</title>
+
+  <!-- KaTeX for LaTeX rendering -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" crossorigin="anonymous" />
+
+  <style>
+    :root {
+      --bg: #f6fbf8;
+      --panel: #ffffff;
+      --panel-soft: #f8fdfb;
+      --border: #d9e8df;
+      --text: #14251c;
+      --muted: #5f7469;
+      --accent: #0f766e;
+      --accent-strong: #0b5d57;
+      --green: #16a34a;
+      --green-soft: #e8f8ee;
+      --warn-soft: #fff7e8;
+      --error: #b42318;
+      --error-soft: #fef3f2;
+      --radius-xl: 24px;
+      --radius-lg: 18px;
+      --radius-md: 14px;
+      --shadow: 0 10px 30px rgba(15, 118, 110, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(22, 163, 74, 0.12), transparent 30%),
+        radial-gradient(circle at top right, rgba(15, 118, 110, 0.14), transparent 28%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .app {
+      width: min(1160px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 18px 0 60px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 12px;
+      z-index: 20;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 18px;
+      border: 1px solid rgba(255, 255, 255, 0.55);
+      border-radius: 26px;
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(14px);
+      box-shadow: var(--shadow);
+    }
+
+    .brand {
+      font-size: 24px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: var(--accent-strong);
+      white-space: nowrap;
+    }
+
+    .brand-sub {
+      display: block;
+      margin-top: 2px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--muted);
+      letter-spacing: 0.01em;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 6px;
+      padding: 6px;
+      border-radius: 999px;
+      background: #e9f4ee;
+      border: 1px solid #d7eadf;
+      max-width: 100%;
+      overflow-x: auto;
+    }
+
+    .tab {
+      border: 0;
+      cursor: pointer;
+      padding: 11px 18px;
+      border-radius: 999px;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 700;
+      font-size: 14px;
+      white-space: nowrap;
+      transition: 0.18s ease;
+    }
+
+    .tab:hover {
+      color: var(--accent-strong);
+      background: rgba(255, 255, 255, 0.6);
+    }
+
+    .tab.active {
+      background: #ffffff;
+      color: var(--accent-strong);
+      box-shadow: 0 8px 18px rgba(15, 118, 110, 0.12);
+    }
+
+    .hero {
+      margin: 34px 2px 20px;
+      display: grid;
+      gap: 8px;
+    }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(34px, 5vw, 58px);
+      line-height: 1.02;
+      letter-spacing: -0.05em;
+      max-width: 760px;
+    }
+
+    .hero p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.5;
+      max-width: 760px;
+    }
+
+    .panel {
+      display: none;
+    }
+
+    .panel.active {
+      display: block;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-xl);
+      box-shadow: var(--shadow);
+      padding: 22px;
+      margin-bottom: 18px;
+    }
+
+    .card-title {
+      font-size: 19px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      margin-bottom: 8px;
+    }
+
+    .section-note {
+      margin: 0 0 16px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: grid;
+      gap: 8px;
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    input,
+    select,
+    textarea {
+      width: 100%;
+      border: 1px solid #cfe2d7;
+      border-radius: 16px;
+      background: #fbfefc;
+      color: var(--text);
+      padding: 13px 14px;
+      font: inherit;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px rgba(15, 118, 110, 0.08);
+    }
+
+    textarea {
+      resize: vertical;
+      min-height: 140px;
+      line-height: 1.55;
+    }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+    }
+
+    button {
+      border: 0;
+      cursor: pointer;
+      border-radius: 14px;
+      padding: 13px 18px;
+      font-weight: 800;
+      font-size: 14px;
+      transition: transform 0.15s ease, opacity 0.15s ease, background 0.15s ease;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+      transform: none !important;
+    }
+
+    .primary {
+      color: white;
+      background: linear-gradient(135deg, var(--accent), var(--green));
+      box-shadow: 0 10px 22px rgba(22, 163, 74, 0.18);
+    }
+
+    .primary:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+
+    .secondary {
+      background: #ecf5f0;
+      color: var(--accent-strong);
+      border: 1px solid #d6e8de;
+    }
+
+    .secondary:hover:not(:disabled) {
+      background: #e2f1e9;
+    }
+
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 14px;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .error {
+      margin-top: 14px;
+      padding: 13px 14px;
+      border-radius: 14px;
+      background: var(--error-soft);
+      color: var(--error);
+      border: 1px solid #f3c1bd;
+      line-height: 1.5;
+      font-weight: 600;
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      border: 2px solid rgba(15, 118, 110, 0.18);
+      border-top-color: var(--accent);
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+      flex: 0 0 auto;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+      gap: 12px;
+      margin-top: 14px;
+    }
+
+    .metric {
+      background: var(--panel-soft);
+      border: 1px solid #e0eee6;
+      border-radius: var(--radius-lg);
+      padding: 14px;
+      min-height: 92px;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .metric span {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      line-height: 1.35;
+    }
+
+    .metric strong {
+      font-size: 21px;
+      line-height: 1.2;
+      letter-spacing: -0.02em;
+      overflow-wrap: anywhere;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      margin-top: 16px;
+    }
+
+    .response-pane {
+      border: 1px solid #d9e8df;
+      background: #ffffff;
+      border-radius: 20px;
+      padding: 16px;
+      min-height: 280px;
+      overflow: hidden;
+    }
+
+    .pane-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+    }
+
+    .pane-head strong {
+      font-size: 16px;
+      line-height: 1.35;
+    }
+
+    .pill-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .pill {
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: #edf7f1;
+      border: 1px solid #d8eadf;
+      color: var(--accent-strong);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.3;
+    }
+
+    .pill-warning {
+      background: var(--warn-soft);
+      border-color: #f2dfae;
+      color: #8a5a00;
+    }
+
+    .savings-banner {
+      margin-top: 14px;
+      padding: 15px 16px;
+      border-radius: 16px;
+      background: var(--green-soft);
+      border: 1px solid #c8ecd4;
+      color: #14532d;
+      font-weight: 800;
+      line-height: 1.5;
+    }
+
+    .md-body {
+      line-height: 1.7;
+      overflow-wrap: break-word;
+      color: var(--text);
+    }
+
+    .md-body>*:first-child {
+      margin-top: 0;
+    }
+
+    .md-body>*:last-child {
+      margin-bottom: 0;
+    }
+
+    .md-body h1,
+    .md-body h2,
+    .md-body h3,
+    .md-body h4 {
+      line-height: 1.25;
+      letter-spacing: -0.02em;
+      margin: 18px 0 10px;
+    }
+
+    .md-body p {
+      margin: 10px 0;
+    }
+
+    .md-body ul,
+    .md-body ol {
+      margin: 10px 0;
+      padding-left: 22px;
+    }
+
+    .md-body li {
+      margin: 5px 0;
+    }
+
+    .md-body code {
+      background: #eef6f1;
+      border: 1px solid #d9e8df;
+      border-radius: 7px;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.92em;
+    }
+
+    .md-body pre {
+      background: #0d1512;
+      color: #e8f1ec;
+      border-radius: 16px;
+      padding: 16px;
+      overflow: auto;
+      border: 1px solid #22352c;
+      margin: 12px 0;
+    }
+
+    .md-body pre code {
+      background: transparent;
+      border: 0;
+      color: inherit;
+      padding: 0;
+    }
+
+    .md-body table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0;
+      display: block;
+      overflow-x: auto;
+    }
+
+    .md-body th,
+    .md-body td {
+      border: 1px solid #d8e7de;
+      padding: 8px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .md-body th {
+      background: #f1f8f4;
+    }
+
+    .md-body blockquote {
+      margin: 12px 0;
+      padding: 10px 14px;
+      border-left: 4px solid #b8d8c7;
+      background: #f5fbf7;
+      border-radius: 0 12px 12px 0;
+      color: #31463c;
+    }
+
+    .md-body img {
+      max-width: 100%;
+      border-radius: 12px;
+    }
+
+    .math-display {
+      margin: 12px 0;
+      overflow-x: auto;
+      overflow-y: hidden;
+    }
+
+    .math-inline {
+      overflow-wrap: anywhere;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border-radius: 16px;
+      border: 1px solid #d9e8df;
+      background: white;
+      margin-top: 14px;
+    }
+
+    .distribution-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 640px;
+    }
+
+    .distribution-table th,
+    .distribution-table td {
+      border: 1px solid #d9e8df;
+      padding: 10px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .distribution-table th {
+      background: #f2f8f4;
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+    }
+
+    .footer-note {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 900px) {
+      .topbar {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .tabs {
+        width: 100%;
+      }
+
+      .split {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        margin-top: 24px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div>
+        <div class="brand">EcoGPT</div>
+        <span class="brand-sub">Green LLM demo · compression, routing, and impact metrics</span>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="EcoGPT sections">
+        <button class="tab active" data-tab="compression" role="tab" aria-selected="true">Compression</button>
+        <button class="tab" data-tab="routing" role="tab" aria-selected="false">Routing</button>
+        <button class="tab" data-tab="green" role="tab" aria-selected="false">Green Metrics</button>
+      </nav>
+    </header>
+
+    <section class="hero">
+      <h1>How can I help, Krish?</h1>
+      <p>Compressed prompts, smarter routing, lighter footprint.</p>
+    </section>
+
+    <main>
+      <!-- ================= COMPRESSION ================= -->
+      <section id="panel-compression" class="panel active">
+        <div class="card">
+          <div class="card-title">1. Configure</div>
+          <p class="section-note">
+            Choose a model, set a target compression rate, and run the compressed prompt against the original prompt.
+            The UI will compare outputs and green metrics side by side.
+          </p>
+
+          <div class="form-grid">
+            <label for="compression-model">Model</label>
+            <select id="compression-model" aria-label="Compression model"></select>
+
+            <label for="compression-rate">Target compression rate</label>
+            <input id="compression-rate" type="number" min="0.01" max="1" step="0.05" placeholder="Example: 0.5" />
+          </div>
+
+          <label for="compression-prompt">Prompt</label>
+          <textarea id="compression-prompt" rows="8" placeholder="Enter your prompt here..."></textarea>
+
+          <div class="actions">
+            <button id="compression-run-btn" class="primary">Compress &amp; Compare</button>
+            <button id="compression-clear-btn" class="secondary">Clear</button>
+          </div>
+
+          <div id="compression-status" class="status hidden"></div>
+          <div id="compression-error" class="error hidden"></div>
+        </div>
+
+        <div id="compression-results" class="hidden">
+          <div class="card">
+            <div class="card-title">2. Compression summary</div>
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>Original tokens</span>
+                <strong id="compression-original-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>Compressed tokens</span>
+                <strong id="compression-compressed-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>Token change</span>
+                <strong id="compression-token-reduction">—</strong>
+              </div>
+              <div class="metric">
+                <span>Compression time</span>
+                <strong id="compression-time">—</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">3. Side-by-side responses</div>
+
+            <div class="split">
+              <div class="response-pane">
+                <div class="pane-head">
+                  <strong id="compression-pre-title">Without compression</strong>
+                </div>
+                <div id="compression-pre-metrics" class="pill-row"></div>
+                <div id="compression-pre-response" class="md-body"></div>
+              </div>
+
+              <div class="response-pane">
+                <div class="pane-head">
+                  <strong id="compression-post-title">With compression</strong>
+                </div>
+                <div id="compression-post-metrics" class="pill-row"></div>
+                <div id="compression-post-response" class="md-body"></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">4. Savings from compression</div>
+            <div id="compression-savings-banner" class="savings-banner hidden"></div>
+
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>Energy saved, P50</span>
+                <strong id="compression-energy-saved">—</strong>
+              </div>
+              <div class="metric">
+                <span>Carbon saved, P50</span>
+                <strong id="compression-carbon-saved">—</strong>
+              </div>
+              <div class="metric">
+                <span>Water saved, P50</span>
+                <strong id="compression-water-saved">—</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= ROUTING ================= -->
+      <section id="panel-routing" class="panel">
+        <div class="card">
+          <div class="card-title">1. Send a prompt</div>
+          <p class="section-note">
+            The router decides whether to send the prompt to the small or large model.
+            If the small model is chosen, the large model is also run for fidelity comparison.
+          </p>
+
+          <label for="routing-prompt">Prompt</label>
+          <textarea id="routing-prompt" rows="8" placeholder="Enter your prompt here..."></textarea>
+
+          <div class="actions">
+            <button id="routing-run-btn" class="primary">Route &amp; Calculate Savings</button>
+            <button id="routing-clear-btn" class="secondary">Clear</button>
+          </div>
+
+          <div id="routing-status" class="status hidden"></div>
+          <div id="routing-error" class="error hidden"></div>
+        </div>
+
+        <div id="routing-results" class="hidden">
+          <div class="card">
+            <div class="card-title">2. Routing decision</div>
+
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>Routed to</span>
+                <strong id="routing-routed-to">—</strong>
+              </div>
+              <div class="metric">
+                <span>Input tokens</span>
+                <strong id="routing-input-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>Output tokens</span>
+                <strong id="routing-output-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>P50 energy</span>
+                <strong id="routing-energy">—</strong>
+              </div>
+              <div class="metric">
+                <span>P50 carbon</span>
+                <strong id="routing-carbon">—</strong>
+              </div>
+              <div class="metric">
+                <span>P50 water</span>
+                <strong id="routing-water">—</strong>
+              </div>
+              <div class="metric">
+                <span>Hardware</span>
+                <strong id="routing-hardware">—</strong>
+              </div>
+            </div>
+          </div>
+
+          <div id="routing-single-card" class="card hidden">
+            <div id="routing-single-title" class="card-title">3. Response</div>
+            <div id="routing-response" class="md-body"></div>
+          </div>
+
+          <div id="routing-comparison-card" class="card hidden">
+            <div class="card-title">3. Side-by-side responses</div>
+            <div id="routing-savings-banner" class="savings-banner hidden"></div>
+
+            <div class="split">
+              <div class="response-pane">
+                <div class="pane-head">
+                  <strong id="routing-small-title">Small model response</strong>
+                </div>
+                <div id="routing-small-metrics" class="pill-row"></div>
+                <div id="routing-small-response" class="md-body"></div>
+              </div>
+
+              <div class="response-pane">
+                <div class="pane-head">
+                  <strong id="routing-large-title">Large model response</strong>
+                </div>
+                <div id="routing-large-metrics" class="pill-row"></div>
+                <div id="routing-large-response" class="md-body"></div>
+              </div>
+            </div>
+
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>Energy saved, P50</span>
+                <strong id="routing-energy-saved">—</strong>
+              </div>
+              <div class="metric">
+                <span>Carbon saved, P50</span>
+                <strong id="routing-carbon-saved">—</strong>
+              </div>
+              <div class="metric">
+                <span>Water saved, P50</span>
+                <strong id="routing-water-saved">—</strong>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ================= GREEN METRICS ================= -->
+      <section id="panel-green" class="panel">
+        <div class="card">
+          <div class="card-title">Standalone green-metric calculator</div>
+          <p class="section-note">
+            Estimate energy, carbon, and water for a given model plus prompt and optional output text.
+            This endpoint does not call the model.
+          </p>
+
+          <div class="form-grid">
+            <label for="green-model">Model</label>
+            <select id="green-model" aria-label="Green metric model"></select>
+
+            <label for="green-output">Optional output text</label>
+            <textarea id="green-output" rows="4"
+              placeholder="Optional. Paste generated output text here if you have it."></textarea>
+          </div>
+
+          <label for="green-input">Input prompt</label>
+          <textarea id="green-input" rows="6" placeholder="Paste the input prompt here..."></textarea>
+
+          <div class="actions">
+            <button id="green-run-btn" class="primary">Calculate</button>
+            <button id="green-clear-btn" class="secondary">Clear</button>
+          </div>
+
+          <div id="green-status" class="status hidden"></div>
+          <div id="green-error" class="error hidden"></div>
+        </div>
+
+        <div id="green-results" class="hidden">
+          <div class="card">
+            <div class="card-title">Results</div>
+
+            <div class="metrics-grid">
+              <div class="metric">
+                <span>Model</span>
+                <strong id="green-model-result">—</strong>
+              </div>
+              <div class="metric">
+                <span>Input tokens</span>
+                <strong id="green-input-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>Output tokens</span>
+                <strong id="green-output-tokens">—</strong>
+              </div>
+              <div class="metric">
+                <span>Hardware</span>
+                <strong id="green-hardware">—</strong>
+              </div>
+              <div class="metric">
+                <span>Energy, P50</span>
+                <strong id="green-energy">—</strong>
+              </div>
+              <div class="metric">
+                <span>Carbon, P50</span>
+                <strong id="green-carbon">—</strong>
+              </div>
+              <div class="metric">
+                <span>Water, P50</span>
+                <strong id="green-water">—</strong>
+              </div>
+              <div class="metric">
+                <span>WUE</span>
+                <strong id="green-wue">—</strong>
+              </div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-title">Full P5–P95 distributions</div>
+            <div id="green-distributions" class="table-wrap"></div>
+            <div class="footer-note">
+              If the backend returns only selected percentiles, the table will show only those values.
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Markdown, sanitizer, KaTeX -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.6/dist/purify.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    crossorigin="anonymous"></script>
+
+  <script>
+    const SAMPLE_PROMPT =
+      "An investor purchases a 10-year government bond with a face value of ₹10,000 at a price of ₹9,600. " +
+      "The bond pays an annual coupon of 7% on face value. After one year, the bond is sold for ₹9,850. " +
+      "If inflation during the year was 5.5%, calculate the investor's nominal holding-period return and approximate real return.";
+
+    const state = {
+      models: [],
+      defaultCompressionModel: "",
+      defaultRate: 0.5
+    };
+
+    function $(selector) {
+      if (selector instanceof Element) return selector;
+      return document.querySelector(selector);
+    }
+
+    document.addEventListener("DOMContentLoaded", init);
+
+    function init() {
+      setupTabs();
+      bindEvents();
+
+      $("#compression-prompt").value = SAMPLE_PROMPT;
+      $("#routing-prompt").value = SAMPLE_PROMPT;
+      $("#compression-rate").value = "0.5";
+
+      useFallbackConfig();
+      loadConfig();
+
+      if (window.marked && marked.use) {
+        try {
+          marked.use({ gfm: true, breaks: true });
+        } catch (err) {
+          console.warn("Could not configure marked:", err);
+        }
+      }
+    }
+
+    function setupTabs() {
+      document.querySelectorAll(".tab").forEach((button) => {
+        button.addEventListener("click", () => {
+          activateTab(button.dataset.tab);
+        });
+      });
+    }
+
+    function activateTab(tabName) {
+      document.querySelectorAll(".tab").forEach((button) => {
+        const isActive = button.dataset.tab === tabName;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", String(isActive));
+      });
+
+      document.querySelectorAll(".panel").forEach((panel) => {
+        panel.classList.toggle("active", panel.id === `panel-${tabName}`);
+      });
+    }
+
+    function bindEvents() {
+      $("#compression-run-btn").addEventListener("click", runCompression);
+      $("#compression-clear-btn").addEventListener("click", clearCompression);
+
+      $("#routing-run-btn").addEventListener("click", runRouting);
+      $("#routing-clear-btn").addEventListener("click", clearRouting);
+
+      $("#green-run-btn").addEventListener("click", runGreenMetric);
+      $("#green-clear-btn").addEventListener("click", clearGreenMetric);
+    }
+
+    function useFallbackConfig() {
+      state.models = [
+        { slot: "small", name: "small" },
+        { slot: "large", name: "large" }
+      ];
+      state.defaultCompressionModel = "small";
+      state.defaultRate = 0.5;
+      populateModelSelects();
+    }
+
+    async function loadConfig() {
+      try {
+        const cfg = await apiGet("/api/config");
+
+        const models = [];
+
+        if (cfg?.models?.small?.name) {
+          models.push({ slot: "small", name: cfg.models.small.name });
+        }
+
+        if (cfg?.models?.large?.name) {
+          models.push({ slot: "large", name: cfg.models.large.name });
+        }
+
+        if (models.length) {
+          state.models = models;
+        }
+
+        state.defaultCompressionModel =
+          cfg?.models?.small?.name || state.models[0]?.name || "small";
+
+        const defaultRate = Number(cfg?.compression?.default_target_rate);
+        state.defaultRate = Number.isFinite(defaultRate) ? defaultRate : 0.5;
+
+        populateModelSelects();
+        $("#compression-rate").value = String(state.defaultRate);
+      } catch (err) {
+        console.warn("Could not load /api/config. Using fallback model list.", err);
+      }
+    }
+
+    function populateModelSelects() {
+      const compressionSelect = $("#compression-model");
+      const greenSelect = $("#green-model");
+
+      const compressionCurrent =
+        compressionSelect?.value || state.defaultCompressionModel || state.models[0]?.name;
+
+      const greenCurrent =
+        greenSelect?.value || state.models[0]?.name;
+
+      fillSelect(compressionSelect, state.models, compressionCurrent);
+      fillSelect(greenSelect, state.models, greenCurrent);
+
+      if (
+        compressionSelect &&
+        state.defaultCompressionModel &&
+        Array.from(compressionSelect.options).some(
+          (option) => option.value === state.defaultCompressionModel
+        )
+      ) {
+        compressionSelect.value = state.defaultCompressionModel;
+      }
+    }
+
+    function fillSelect(select, models, preferredValue) {
+      if (!select) return;
+
+      select.innerHTML = "";
+
+      models.forEach((model) => {
+        const option = document.createElement("option");
+        option.value = model.name;
+        option.textContent = `${model.name} (${model.slot})`;
+        select.appendChild(option);
+      });
+
+      if (
+        preferredValue &&
+        Array.from(select.options).some((option) => option.value === preferredValue)
+      ) {
+        select.value = preferredValue;
+      } else if (select.options.length) {
+        select.selectedIndex = 0;
+      }
+    }
+
+    async function apiGet(url) {
+      const response = await fetch(url);
+
+      // Read the body ONCE; consumed-body failures should surface, not
+      // silently turn the response into `{}`.
+      let data;
+      try {
+        data = await response.json();
+      } catch (err) {
+        throw new Error(
+          `Could not parse response from ${url}: ${err.message}. ` +
+          "If you installed a fetch hook in the console, remove it and refresh."
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(data?.error || `Request failed with status ${response.status}`);
+      }
+
+      return data;
+    }
+
+    async function apiPost(url, body) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+
+      // IMPORTANT: read the body ONCE. If anything else (a fetch hook,
+      // a service worker, a debugging snippet) calls `response.json()`
+      // or `response.text()` before this point, the body stream is
+      // consumed and the call below throws "Failed to execute 'json' on
+      // 'Response': body stream already read". The `.catch(() => ({}))`
+      // would then return `{}` and the renderer silently shows dashes.
+      // Throwing on consumed-body makes that failure loud instead of
+      // silent.
+      let data;
+      try {
+        data = await response.json();
+      } catch (err) {
+        throw new Error(
+          `Could not parse response from ${url}: ${err.message}. ` +
+          "If you installed a fetch hook in the console, remove it and refresh."
+        );
+      }
+
+      if (!response.ok) {
+        throw new Error(data?.error || `Request failed with status ${response.status}`);
+      }
+
+      if (data && data.error) {
+        throw new Error(data.error);
+      }
+
+      return data;
+    }
+
+    function setButtonLoading(button, isLoading, loadingText) {
+      if (!button) return;
+
+      if (isLoading) {
+        if (!button.dataset.originalText) {
+          button.dataset.originalText = button.textContent;
+        }
+        button.disabled = true;
+        button.textContent = loadingText || "Working…";
+      } else {
+        button.disabled = false;
+        if (button.dataset.originalText) {
+          button.textContent = button.dataset.originalText;
+        }
+      }
+    }
+
+    function show(element) {
+      if (element) element.classList.remove("hidden");
+    }
+
+    function hide(element) {
+      if (element) element.classList.add("hidden");
+    }
+
+    function showStatus(element, message) {
+      if (!element) return;
+      element.innerHTML = `<span class="spinner"></span><span>${escapeHtml(message)}</span>`;
+      show(element);
+    }
+
+    function hideStatus(element) {
+      if (!element) return;
+      element.innerHTML = "";
+      hide(element);
+    }
+
+    function showError(element, message) {
+      if (!element) return;
+      element.textContent = message || "Something went wrong.";
+      show(element);
+    }
+
+    function clearError(element) {
+      if (!element) return;
+      element.textContent = "";
+      hide(element);
+    }
+
+    function setText(selector, value) {
+      const element = typeof selector === "string" ? document.querySelector(selector) : selector;
+      if (!element) return;
+      element.textContent = value == null || value === "" ? "—" : String(value);
+    }
+
+    function clearCompression() {
+      $("#compression-prompt").value = "";
+      hide($("#compression-results"));
+      hideStatus($("#compression-status"));
+      clearError($("#compression-error"));
+    }
+
+    function clearRouting() {
+      $("#routing-prompt").value = "";
+      hide($("#routing-results"));
+      hideStatus($("#routing-status"));
+      clearError($("#routing-error"));
+    }
+
+    function clearGreenMetric() {
+      $("#green-input").value = "";
+      $("#green-output").value = "";
+      hide($("#green-results"));
+      hideStatus($("#green-status"));
+      clearError($("#green-error"));
+    }
+
+    async function runCompression() {
+      const prompt = $("#compression-prompt").value.trim();
+      const model = $("#compression-model").value;
+      const statusElement = $("#compression-status");
+      const errorElement = $("#compression-error");
+      const resultsElement = $("#compression-results");
+      const button = $("#compression-run-btn");
+
+      clearError(errorElement);
+      hide(resultsElement);
+
+      if (!prompt) {
+        showError(errorElement, "Please enter a prompt before running compression.");
+        return;
+      }
+
+      let targetRate = parseFloat($("#compression-rate").value);
+
+      if (!Number.isFinite(targetRate)) {
+        targetRate = Number.isFinite(state.defaultRate) ? state.defaultRate : 0.5;
+      }
+
+      targetRate = Math.min(Math.max(targetRate, 0.01), 1);
+
+      setButtonLoading(button, true, "Compressing…");
+      showStatus(statusElement, "Running compression and both model calls. This may take a while.");
+
+      try {
+        const data = await apiPost("/api/compress", {
+          prompt,
+          target_rate: targetRate,
+          model
+        });
+
+        renderCompressionResults(data);
+        show(resultsElement);
+        hideStatus(statusElement);
+      } catch (err) {
+        hideStatus(statusElement);
+        showError(errorElement, err.message || String(err));
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }
+
+    function renderCompressionResults(data) {
+      const compressionInfo = data?.compression_info || {};
+      const outputs = data?.outputs || {};
+      const greenMetrics = data?.green_metrics || {};
+      const savings = greenMetrics?.savings || {};
+
+      setText("#compression-original-tokens", formatNumber(compressionInfo.og_token_count));
+      setText("#compression-compressed-tokens", formatNumber(compressionInfo.comp_token_count));
+      setText(
+        "#compression-token-reduction",
+        formatTokenReduction(compressionInfo.og_token_count, compressionInfo.comp_token_count)
+      );
+      setText("#compression-time", formatNumber(compressionInfo.compression_time_ms, "ms"));
+
+      setText("#compression-pre-title", "Without compression");
+      setText("#compression-post-title", "With compression");
+
+      renderMetricPills(
+        $("#compression-pre-metrics"),
+        greenMetrics.pre_compression,
+        outputs.pre_output_tokens
+      );
+
+      renderMetricPills(
+        $("#compression-post-metrics"),
+        greenMetrics.post_compression,
+        outputs.post_output_tokens
+      );
+
+      renderRichText($("#compression-pre-response"), outputs.pre_compression_response);
+      renderRichText($("#compression-post-response"), outputs.post_compression_response);
+
+      renderSavingsBanner($("#compression-savings-banner"), savings, "Compression");
+
+      setText("#compression-energy-saved", formatNumber(savings.energy_saved_wh_p50, "Wh"));
+      setText("#compression-carbon-saved", formatNumber(savings.carbon_saved_gco2e_p50, "g CO₂e"));
+      setText("#compression-water-saved", formatNumber(savings.water_saved_l_p50, "L"));
+    }
+
+    async function runRouting() {
+      const prompt = $("#routing-prompt").value.trim();
+      const statusElement = $("#routing-status");
+      const errorElement = $("#routing-error");
+      const resultsElement = $("#routing-results");
+      const button = $("#routing-run-btn");
+
+      clearError(errorElement);
+      hide(resultsElement);
+
+      if (!prompt) {
+        showError(errorElement, "Please enter a prompt before running the router.");
+        return;
+      }
+
+      setButtonLoading(button, true, "Routing…");
+      showStatus(statusElement, "Running router logic and any required comparison call.");
+
+      try {
+        const data = await apiPost("/api/router", { prompt });
+
+        renderRoutingResults(data);
+        show(resultsElement);
+        hideStatus(statusElement);
+      } catch (err) {
+        hideStatus(statusElement);
+        showError(errorElement, err.message || String(err));
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }
+
+    function renderRoutingResults(data) {
+      const green = data?.green_metrics || {};
+
+      setText("#routing-routed-to", data?.routed_to);
+      setText("#routing-input-tokens", formatNumber(data?.input_tokens));
+      setText("#routing-output-tokens", formatNumber(data?.output_tokens));
+      setText("#routing-energy", formatNumber(getP50(green.energy_wh), "Wh"));
+      setText("#routing-carbon", formatNumber(getP50(green.carbon_gco2e), "g CO₂e"));
+      setText("#routing-water", formatNumber(getP50(green.water_liters), "L"));
+      setText("#routing-hardware", formatHardware(green));
+
+      const singleCard = $("#routing-single-card");
+      const comparisonCard = $("#routing-comparison-card");
+
+      if (data?.saved_by_routing && data?.large_model_comparison) {
+        hide(singleCard);
+        show(comparisonCard);
+
+        const comparison = data.large_model_comparison;
+
+        setText(
+          "#routing-small-title",
+          `${data?.routed_to || "Small model"} response, router choice`
+        );
+
+        setText(
+          "#routing-large-title",
+          `${comparison?.large_model || "Large model"} response, fidelity comparison`
+        );
+
+        renderMetricPills($("#routing-small-metrics"), green, data?.output_tokens);
+
+        renderMetricPills(
+          $("#routing-large-metrics"),
+          comparison?.large_model_green_metrics,
+          comparison?.large_model_output_tokens
+        );
+
+        renderRichText($("#routing-small-response"), data?.content);
+
+        if (comparison?.large_model_comparison_error && !comparison?.large_model_content) {
+          renderRichText(
+            $("#routing-large-response"),
+            `Large model comparison failed: ${comparison.large_model_comparison_error}`
+          );
+        } else {
+          renderRichText($("#routing-large-response"), comparison?.large_model_content);
+        }
+
+        renderSavingsBanner($("#routing-savings-banner"), comparison, "Routing");
+
+        setText("#routing-energy-saved", formatNumber(comparison?.energy_saved_wh_p50, "Wh"));
+        setText("#routing-carbon-saved", formatNumber(comparison?.carbon_saved_gco2e_p50, "g CO₂e"));
+        setText("#routing-water-saved", formatNumber(comparison?.water_saved_l_p50, "L"));
+      } else {
+        hide(comparisonCard);
+        show(singleCard);
+
+        setText("#routing-single-title", `3. Response (${data?.routed_to || "model"})`);
+        renderRichText($("#routing-response"), data?.content);
+      }
+    }
+
+    async function runGreenMetric() {
+      const model = $("#green-model").value;
+      const inputPrompt = $("#green-input").value.trim();
+      const outputText = $("#green-output").value.trim();
+
+      const statusElement = $("#green-status");
+      const errorElement = $("#green-error");
+      const resultsElement = $("#green-results");
+      const button = $("#green-run-btn");
+
+      clearError(errorElement);
+      hide(resultsElement);
+
+      if (!inputPrompt) {
+        showError(errorElement, "Please enter an input prompt for the green metric estimate.");
+        return;
+      }
+
+      setButtonLoading(button, true, "Calculating…");
+      showStatus(statusElement, "Estimating green metrics from token counts.");
+
+      try {
+        const data = await apiPost("/api/green-metric", {
+          model,
+          input_prompt: inputPrompt,
+          output_text: outputText || ""
+        });
+
+        renderGreenMetricResults(data);
+        show(resultsElement);
+        hideStatus(statusElement);
+      } catch (err) {
+        hideStatus(statusElement);
+        showError(errorElement, err.message || String(err));
+      } finally {
+        setButtonLoading(button, false);
+      }
+    }
+
+    function renderGreenMetricResults(data) {
+      setText("#green-model-result", data?.model);
+      setText("#green-input-tokens", formatNumber(data?.input_tokens));
+      setText("#green-output-tokens", formatNumber(data?.output_tokens));
+      setText("#green-hardware", formatStandaloneHardware(data));
+      setText("#green-energy", formatNumber(getP50(data?.energy_wh), "Wh"));
+      setText("#green-carbon", formatNumber(getP50(data?.carbon_gco2e), "g CO₂e"));
+      setText("#green-water", formatNumber(getP50(data?.water_liters), "L"));
+      setText("#green-wue", formatNumber(data?.wue_l_per_kwh, "L/kWh"));
+
+      renderGreenDistributions($("#green-distributions"), data);
+    }
+
+    function renderGreenDistributions(container, data) {
+      if (!container) return;
+
+      container.innerHTML = "";
+
+      const metricRows = [
+        ["Energy (Wh)", data?.energy_wh],
+        ["Carbon (g CO₂e)", data?.carbon_gco2e],
+        ["Water (L)", data?.water_liters]
+      ];
+
+      const percentileKeys = new Set();
+
+      metricRows.forEach(([_, metricValue]) => {
+        if (metricValue && typeof metricValue === "object" && !Array.isArray(metricValue)) {
+          Object.entries(metricValue).forEach(([key, value]) => {
+            const numericValue = Number(value);
+            if (Number.isFinite(numericValue)) {
+              percentileKeys.add(key);
+            }
+          });
+        }
+      });
+
+      const orderedKeys = Array.from(percentileKeys).sort((a, b) => {
+        const aNumber = parseInt(String(a).replace(/[^0-9]/g, ""), 10);
+        const bNumber = parseInt(String(b).replace(/[^0-9]/g, ""), 10);
+
+        if (Number.isFinite(aNumber) && Number.isFinite(bNumber) && aNumber !== bNumber) {
+          return aNumber - bNumber;
+        }
+
+        return String(a).localeCompare(String(b));
+      });
+
+      if (!orderedKeys.length) {
+        const fallbackTable = document.createElement("table");
+        fallbackTable.className = "distribution-table";
+
+        const fallbackHead = document.createElement("thead");
+        fallbackHead.innerHTML = `<tr><th>Metric</th><th>Value</th></tr>`;
+
+        const fallbackBody = document.createElement("tbody");
+
+        metricRows.forEach(([label, metricValue]) => {
+          const row = document.createElement("tr");
+
+          const labelCell = document.createElement("td");
+          labelCell.textContent = label;
+
+          const valueCell = document.createElement("td");
+
+          if (typeof metricValue === "number") {
+            valueCell.textContent = formatNumber(metricValue);
+          } else {
+            const p50 = getP50(metricValue);
+            valueCell.textContent = p50 == null ? "—" : formatNumber(p50);
+          }
+
+          row.appendChild(labelCell);
+          row.appendChild(valueCell);
+          fallbackBody.appendChild(row);
+        });
+
+        fallbackTable.appendChild(fallbackHead);
+        fallbackTable.appendChild(fallbackBody);
+        container.appendChild(fallbackTable);
+
+        return;
+      }
+
+      const table = document.createElement("table");
+      table.className = "distribution-table";
+
+      const thead = document.createElement("thead");
+      const headRow = document.createElement("tr");
+
+      const metricHeader = document.createElement("th");
+      metricHeader.textContent = "Metric";
+      headRow.appendChild(metricHeader);
+
+      orderedKeys.forEach((key) => {
+        const th = document.createElement("th");
+        th.textContent = key;
+        headRow.appendChild(th);
+      });
+
+      thead.appendChild(headRow);
+
+      const tbody = document.createElement("tbody");
+
+      metricRows.forEach(([label, metricValue]) => {
+        const row = document.createElement("tr");
+
+        const labelCell = document.createElement("td");
+        labelCell.textContent = label;
+        row.appendChild(labelCell);
+
+        orderedKeys.forEach((key, index) => {
+          const cell = document.createElement("td");
+
+          if (metricValue && typeof metricValue === "object" && !Array.isArray(metricValue)) {
+            cell.textContent = formatNumber(metricValue[key]);
+          } else if (typeof metricValue === "number") {
+            const isLikelyP50 = String(key).toLowerCase().includes("50");
+            const middleIndex = Math.floor(orderedKeys.length / 2);
+
+            if (isLikelyP50 || index === middleIndex) {
+              cell.textContent = formatNumber(metricValue);
+            } else {
+              cell.textContent = "—";
+            }
+          } else {
+            cell.textContent = "—";
+          }
+
+          row.appendChild(cell);
+        });
+
+        tbody.appendChild(row);
+      });
+
+      table.appendChild(thead);
+      table.appendChild(tbody);
+      container.appendChild(table);
+    }
+
+    function renderMetricPills(container, greenMetrics, outputTokens) {
+      if (!container) return;
+
+      container.innerHTML = "";
+
+      if (!greenMetrics || greenMetrics.error) {
+        container.appendChild(makePill("Green metrics unavailable", "pill pill-warning"));
+        return;
+      }
+
+      const energy = getP50(greenMetrics.energy_wh);
+      const carbon = getP50(greenMetrics.carbon_gco2e);
+      const water = getP50(greenMetrics.water_liters);
+
+      container.appendChild(makePill(`Energy P50: ${formatNumber(energy, "Wh")}`));
+      container.appendChild(makePill(`Carbon P50: ${formatNumber(carbon, "g CO₂e")}`));
+      container.appendChild(makePill(`Water P50: ${formatNumber(water, "L")}`));
+
+      if (outputTokens != null && Number.isFinite(Number(outputTokens))) {
+        container.appendChild(makePill(`Output tokens: ${formatNumber(outputTokens)}`));
+      }
+
+      const hardware = formatHardware(greenMetrics);
+      if (hardware !== "—") {
+        container.appendChild(makePill(hardware));
+      }
+    }
+
+    function renderSavingsBanner(banner, savings, label) {
+      if (!banner) return;
+
+      if (!savings || Object.keys(savings).length === 0) {
+        hide(banner);
+        return;
+      }
+
+      const energyPct = Number(savings.energy_saved_pct);
+      const carbonPct = Number(savings.carbon_saved_pct);
+      const waterPct = Number(savings.water_saved_pct);
+
+      const positiveSavings = [];
+
+      if (Number.isFinite(energyPct) && energyPct > 0) {
+        positiveSavings.push(`${formatPct(energyPct)} energy`);
+      }
+
+      if (Number.isFinite(carbonPct) && carbonPct > 0) {
+        positiveSavings.push(`${formatPct(carbonPct)} carbon`);
+      }
+
+      if (Number.isFinite(waterPct) && waterPct > 0) {
+        positiveSavings.push(`${formatPct(waterPct)} water`);
+      }
+
+      if (positiveSavings.length) {
+        banner.textContent = `${label} saved ${positiveSavings.join(", ")} at P50.`;
+      } else {
+        banner.textContent = `${label} completed. No positive P50 savings were detected.`;
+      }
+
+      show(banner);
+    }
+
+    function makePill(text, className) {
+      const pill = document.createElement("span");
+      pill.className = className || "pill";
+      pill.textContent = text;
+      return pill;
+    }
+
+    function formatNumber(value, unit = "") {
+      const numericValue = Number(value);
+
+      if (value == null || value === "" || !Number.isFinite(numericValue)) {
+        return "—";
+      }
+
+      const abs = Math.abs(numericValue);
+      let text;
+
+      if (abs !== 0 && abs < 0.000001) {
+        text = numericValue.toExponential(3);
+      } else if (abs < 1) {
+        text = numericValue.toLocaleString(undefined, {
+          maximumFractionDigits: 6
+        });
+      } else if (abs < 1000) {
+        text = numericValue.toLocaleString(undefined, {
+          maximumFractionDigits: 3
+        });
+      } else {
+        text = numericValue.toLocaleString(undefined, {
+          maximumFractionDigits: 0
+        });
+      }
+
+      return unit ? `${text} ${unit}` : text;
+    }
+
+    function formatPct(value) {
+      const numericValue = Number(value);
+
+      if (!Number.isFinite(numericValue)) {
+        return "—";
+      }
+
+      return `${numericValue.toLocaleString(undefined, {
+        maximumFractionDigits: 1
+      })}%`;
+    }
+
+    function formatTokenReduction(originalTokens, compressedTokens) {
+      const original = Number(originalTokens);
+      const compressed = Number(compressedTokens);
+
+      if (!Number.isFinite(original) || !Number.isFinite(compressed) || original <= 0) {
+        return "—";
+      }
+
+      const pct = ((original - compressed) / original) * 100;
+
+      if (pct >= 0) {
+        return `${formatPct(pct)} smaller`;
+      }
+
+      return `${formatPct(Math.abs(pct))} larger`;
+    }
+
+    function getP50(metricValue) {
+      if (metricValue == null) return null;
+
+      if (typeof metricValue === "number") {
+        return metricValue;
+      }
+
+      if (typeof metricValue === "object") {
+        return (
+          metricValue.P50 ??
+          metricValue.p50 ??
+          metricValue.median ??
+          metricValue.P50_estimate ??
+          null
+        );
+      }
+
+      return null;
+    }
+
+    function formatHardware(greenMetrics) {
+      if (!greenMetrics || typeof greenMetrics !== "object") {
+        return "—";
+      }
+
+      const hardwareClass = greenMetrics.class ?? greenMetrics.hardware_class;
+      const gpuCount = greenMetrics.gpu_count;
+
+      if (hardwareClass == null && gpuCount == null) {
+        return "—";
+      }
+
+      const parts = [];
+
+      if (hardwareClass != null) {
+        parts.push(String(hardwareClass));
+      }
+
+      if (gpuCount != null && Number.isFinite(Number(gpuCount))) {
+        parts.push(`${gpuCount} GPU${Number(gpuCount) === 1 ? "" : "s"}`);
+      }
+
+      return parts.length ? parts.join(" · ") : "—";
+    }
+
+    function formatStandaloneHardware(data) {
+      if (!data || typeof data !== "object") {
+        return "—";
+      }
+
+      const hardwareClass = data.hardware_class ?? data.class;
+      const gpuCount = data.gpu_count;
+
+      if (hardwareClass == null && gpuCount == null) {
+        return "—";
+      }
+
+      const parts = [];
+
+      if (hardwareClass != null) {
+        parts.push(String(hardwareClass));
+      }
+
+      if (gpuCount != null && Number.isFinite(Number(gpuCount))) {
+        parts.push(`${gpuCount} GPU${Number(gpuCount) === 1 ? "" : "s"}`);
+      }
+
+      return parts.length ? parts.join(" · ") : "—";
+    }
+
+    function escapeHtml(value) {
+      return String(value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function renderRichText(target, rawText) {
+      if (!target) return;
+
+      if (rawText == null || String(rawText).trim() === "") {
+        target.innerHTML = `<div class="muted">No response returned.</div>`;
+        return;
+      }
+
+      if (!window.marked || !window.DOMPurify) {
+        target.textContent = String(rawText);
+        return;
+      }
+
+      let text = String(rawText).replace(/\r\n/g, "\n");
+
+      const mathBlocks = [];
+
+      function stashMath(mathContent, isDisplay) {
+        const id = `MATHPLACEHOLDER${mathBlocks.length}ENDMATH`;
+        mathBlocks.push({ id, math: mathContent, display: isDisplay });
+        return id;
+      }
+
+      const mathPattern = /(\$\$[\s\S]+?\$\$|\\\[[\s\S]+?\\\]|\\\([\s\S]+?\\\)|\$[^$\n]+?\$)/g;
+
+      text = text.replace(mathPattern, (match) => {
+        if (match.startsWith("$$")) {
+          return stashMath(match.slice(2, -2).trim(), true);
+        }
+
+        if (match.startsWith("\\[")) {
+          return stashMath(match.slice(2, -2).trim(), true);
+        }
+
+        if (match.startsWith("\\(")) {
+          return stashMath(match.slice(2, -2).trim(), false);
+        }
+
+        if (match.startsWith("$")) {
+          const inner = match.slice(1, -1);
+
+          if (!inner || /^\s|\s$/.test(inner)) {
+            return match;
+          }
+
+          if (!/[A-Za-z0-9=+\-*/^_\\{}<>]/.test(inner)) {
+            return match;
+          }
+
+          return stashMath(inner.trim(), false);
+        }
+
+        return match;
+      });
+
+      let html;
+
+      try {
+        html = marked.parse(text);
+      } catch (err) {
+        console.warn("Markdown parsing failed, falling back to plain text.", err);
+        html = `<pre>${escapeHtml(text)}</pre>`;
+      }
+
+      html = DOMPurify.sanitize(html, {
+        ADD_ATTR: ["target"]
+      });
+
+      mathBlocks.forEach((block) => {
+        const escapedMath = escapeHtml(block.math);
+
+        const replacement = block.display
+          ? `<div class="math-display">$$${escapedMath}$$</div>`
+          : `<span class="math-inline">\\(${escapedMath}\\)</span>`;
+
+        html = html.replace(new RegExp(`<p>\\s*${block.id}\\s*</p>`, "g"), replacement);
+        html = html.replace(new RegExp(block.id, "g"), replacement);
+      });
+
+      target.innerHTML = html;
+
+      if (window.renderMathInElement) {
+        try {
+          renderMathInElement(target, {
+            delimiters: [
+              { left: "$$", right: "$$", display: true },
+              { left: "\\[", right: "\\]", display: true },
+              { left: "\\(", right: "\\)", display: false }
+            ],
+            throwOnError: false
+          });
+        } catch (err) {
+          console.warn("KaTeX rendering failed:", err);
+        }
+      }
+    }
+  </script>
+</body>
+
+</html>

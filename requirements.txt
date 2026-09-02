@@ -1,0 +1,45 @@
+# ecoGPT — Python dependencies
+#
+# Install with:
+#   pip install -r requirements.txt
+#
+# Notes:
+# - torch is pinned to the CPU build by default for portability. If you have
+#   a CUDA-capable GPU and want LLMLingua-2 to use it, install the matching
+#   CUDA build from https://pytorch.org/get-started/locally/ and remove
+#   the `--index-url` line below.
+# - RouteLLM is a local sibling repo (./RouteLLM), NOT a pip package.
+#   It is added to sys.path at runtime in router.py.
+# - llmlingua pulls in transformers and a few heavy deps; the first
+#   download of the BERT model happens at server startup.
+
+# --- Core web stack ---
+flask>=3.0
+flask-cors>=4.0
+
+# --- Config loader ---
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# --- LLM client (OpenAI-compatible) ---
+requests>=2.31
+
+# --- Token counting ---
+tiktoken>=0.5
+
+# --- Prompt compression (LLMLingua-2) ---
+llmlingua>=0.2
+transformers>=4.40
+# CPU-only torch by default; swap for the CUDA build if you have a GPU.
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1
+sentencepiece>=0.2
+
+# --- Local embeddings for the MF router (no OpenAI key needed) ---
+sentence-transformers>=2.5
+
+# --- Data + numerics for the green-metric estimator ---
+pandas>=2.0
+numpy>=1.24
+
+# --- RouteLLM is installed from the local repo, not pip. See router.py. ---

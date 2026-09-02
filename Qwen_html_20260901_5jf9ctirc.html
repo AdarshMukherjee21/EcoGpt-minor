@@ -1,0 +1,1100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EcoGPT</title>
+  <script>
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem("ecogpt-theme"); } catch (e) {}
+      var prefersDark = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches;
+      document.documentElement.setAttribute("data-theme", saved || (prefersDark ? "dark" : "light"));
+    })();
+  </script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg-base: #f2f8f3;
+      --glow-1: rgba(16, 185, 129, 0.16);
+      --glow-2: rgba(14, 165, 164, 0.14);
+      --glow-3: rgba(132, 204, 22, 0.10);
+      --text: #16281f;
+      --muted: #5c7267;
+      --line: rgba(22, 60, 44, 0.12);
+      --surface: rgba(255, 255, 255, 0.72);
+      --card: rgba(255, 255, 255, 0.86);
+      --card-alt: rgba(240, 253, 247, 0.92);
+      --card-border-strong: rgba(16, 185, 129, 0.35);
+      --composer: #ffffff;
+      --tab-bg: rgba(22, 60, 44, 0.07);
+      --tab-active: #ffffff;
+      --tab-active-text: #16281f;
+      --tab-text: #5c7267;
+      --accent: #10b981;
+      --accent-2: #0ea5a4;
+      --accent-soft: rgba(16, 185, 129, 0.12);
+      --accent-dark: #065f46;
+      --user-bubble: linear-gradient(135deg, #10b981, #0ea5a4);
+      --user-text: #ffffff;
+      --shadow-lg: 0 24px 60px rgba(10, 40, 28, 0.12);
+      --shadow-sm: 0 10px 26px rgba(10, 40, 28, 0.08);
+      --ring: rgba(16, 185, 129, 0.35);
+    }
+
+    html[data-theme="dark"] {
+      color-scheme: dark;
+      --bg-base: #070a08;
+      --glow-1: rgba(16, 185, 129, 0.10);
+      --glow-2: rgba(14, 165, 164, 0.08);
+      --glow-3: rgba(132, 204, 22, 0.05);
+      --text: #e8f2ec;
+      --muted: #93a89b;
+      --line: rgba(151, 222, 187, 0.14);
+      --surface: rgba(16, 20, 17, 0.72);
+      --card: rgba(20, 26, 22, 0.85);
+      --card-alt: rgba(16, 22, 18, 0.92);
+      --card-border-strong: rgba(52, 211, 153, 0.30);
+      --composer: #151a16;
+      --tab-bg: #141814;
+      --tab-active: #2b312c;
+      --tab-active-text: #f2f7f3;
+      --tab-text: #93a89b;
+      --accent: #34d399;
+      --accent-2: #2dd4bf;
+      --accent-soft: rgba(52, 211, 153, 0.14);
+      --accent-dark: #a7f3d0;
+      --user-bubble: linear-gradient(135deg, #059669, #0d9488);
+      --user-text: #f0fdf7;
+      --shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.5);
+      --shadow-sm: 0 10px 26px rgba(0, 0, 0, 0.4);
+      --ring: rgba(52, 211, 153, 0.4);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Avenir Next", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 15% 20%, var(--glow-1), transparent 30%),
+        radial-gradient(circle at 85% 10%, var(--glow-2), transparent 28%),
+        radial-gradient(circle at 50% 100%, var(--glow-3), transparent 32%),
+        var(--bg-base);
+      transition: background-color 0.3s ease, color 0.3s ease;
+    }
+
+    button, textarea { font: inherit; color: inherit; }
+
+    .app { display: flex; height: 100dvh; }
+
+    /* ---------- Sidebar ---------- */
+    .sidebar {
+      width: 60px;
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 14px 0;
+      border-right: 1px solid var(--line);
+    }
+
+    .side-logo {
+      width: 40px;
+      height: 40px;
+      border: none;
+      border-radius: 14px;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      color: var(--accent);
+      background: var(--accent-soft);
+      transition: transform 160ms ease;
+    }
+
+    .side-logo:hover { transform: scale(1.06); }
+
+    .side-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      margin-top: 18px;
+    }
+
+    .side-btn {
+      width: 40px;
+      height: 40px;
+      border: none;
+      border-radius: 12px;
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: background-color 160ms ease, color 160ms ease;
+    }
+
+    .side-btn:hover { background: var(--accent-soft); color: var(--text); }
+
+    .avatar {
+      margin-top: auto;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      color: white;
+      font-size: 0.78rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #10b981, #0ea5a4);
+      box-shadow: var(--shadow-sm);
+      cursor: pointer;
+    }
+
+    /* ---------- Main column ---------- */
+    .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+    .topbar {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 12px 20px;
+      gap: 12px;
+    }
+
+    .tabs {
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      background: var(--tab-bg);
+      border-radius: 999px;
+    }
+
+    .tab {
+      border: none;
+      background: transparent;
+      padding: 8px 18px;
+      border-radius: 999px;
+      font-weight: 600;
+      font-size: 0.92rem;
+      color: var(--tab-text);
+      cursor: pointer;
+      transition: background-color 180ms ease, color 180ms ease;
+      white-space: nowrap;
+    }
+
+    .tab.active {
+      background: var(--tab-active);
+      color: var(--tab-active-text);
+      box-shadow: var(--shadow-sm);
+    }
+
+    .top-actions { justify-self: end; }
+
+    .icon-btn {
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      border: 1px solid var(--line);
+      background: var(--surface);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: transform 160ms ease, background-color 160ms ease;
+    }
+
+    .icon-btn:hover { transform: translateY(-1px); }
+
+    #theme-toggle .icon-sun { display: none; }
+    html[data-theme="dark"] #theme-toggle .icon-sun { display: block; }
+    html[data-theme="dark"] #theme-toggle .icon-moon { display: none; }
+
+    /* ---------- Stage ---------- */
+    .stage {
+      flex: 1;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 0 clamp(12px, 4vw, 32px) 14px;
+    }
+
+    .stage.empty { justify-content: center; }
+
+    .hero { display: none; text-align: center; margin-bottom: 20px; animation: rise 300ms ease; }
+    .stage.empty .hero { display: block; }
+
+    .hero h1 {
+      margin: 0;
+      font-size: clamp(1.7rem, 3.2vw, 2.5rem);
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .hero p { margin: 10px 0 0; color: var(--muted); font-size: 0.95rem; }
+
+    .chat-shell { display: none; flex: 1; min-height: 0; overflow-y: auto; }
+    .chat-shell.active { display: block; }
+    .stage.empty .chat-shell { display: none; }
+
+    .chat {
+      max-width: 980px;
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 22px;
+      padding: 10px 4px 18px;
+    }
+
+    @keyframes rise {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    .message { display: flex; flex-direction: column; gap: 8px; animation: rise 260ms ease; }
+    .message.user { align-self: flex-end; align-items: flex-end; max-width: min(720px, 100%); }
+
+    .bubble {
+      padding: 13px 18px;
+      border-radius: 22px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: var(--user-bubble);
+      color: var(--user-text);
+      border-bottom-right-radius: 8px;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .meta { font-size: 0.76rem; color: var(--muted); padding: 0 6px; }
+
+    .message.assistant { align-self: stretch; width: 100%; }
+
+    .assistant-card {
+      width: 100%;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 18px;
+      box-shadow: var(--shadow-sm);
+      transition: background-color 0.3s ease, border-color 0.3s ease;
+    }
+
+    .assistant-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+
+    .assistant-avatar {
+      width: 36px;
+      height: 36px;
+      border-radius: 13px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(135deg, #34d399, #0ea5a4);
+      color: white;
+      font-weight: 900;
+      flex-shrink: 0;
+    }
+
+    .assistant-name { font-weight: 800; }
+    .assistant-sub { color: var(--muted); font-size: 0.86rem; margin-top: 2px; }
+
+    .badge {
+      margin-left: auto;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-dark);
+      font-weight: 800;
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .badge.sample { opacity: 0.85; }
+
+    .comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+
+    .card {
+      border-radius: 20px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      background: transparent;
+      transition: background-color 0.3s ease, border-color 0.3s ease;
+    }
+
+    .card.original { border-style: dashed; }
+
+    .card.compressed {
+      border-style: solid;
+      border-color: var(--card-border-strong);
+      background: var(--card-alt);
+    }
+
+    .card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+    .card-title { margin: 0; font-size: 0.96rem; font-weight: 800; }
+
+    .chip {
+      padding: 6px 9px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent-dark);
+      font-size: 0.78rem;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    .chip.strong {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #ffffff;
+    }
+
+    .card-body { min-height: 76px; white-space: pre-wrap; line-height: 1.6; font-size: 0.97rem; }
+
+    .metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+
+    .metric {
+      padding: 6px 9px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.76rem;
+      font-weight: 800;
+    }
+
+    .metric.saving { background: var(--accent-soft); border-color: transparent; color: var(--accent-dark); }
+
+    .routing-card { display: flex; flex-direction: column; gap: 16px; }
+
+    .route-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+
+    .route-label {
+      color: var(--muted);
+      font-size: 0.8rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .route-name { font-size: 1.45rem; font-weight: 800; margin: 4px 0 6px; }
+    .route-reason { color: var(--muted); line-height: 1.5; max-width: 640px; }
+
+    .route-badge {
+      padding: 10px 14px;
+      border-radius: 16px;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #ffffff;
+      font-weight: 800;
+      box-shadow: var(--shadow-sm);
+      white-space: nowrap;
+    }
+
+    .route-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+
+    .meta-box {
+      background: var(--card-alt);
+      border: 1px solid var(--line);
+      padding: 12px;
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .meta-box span {
+      color: var(--muted);
+      font-size: 0.74rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .meta-box strong { font-size: 0.98rem; }
+
+    .meter { height: 12px; border-radius: 999px; background: var(--accent-soft); overflow: hidden; }
+    .meter-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--accent-2)); }
+
+    .route-section-title { font-weight: 800; font-size: 0.94rem; margin-top: 4px; }
+
+    .alternatives { display: flex; flex-direction: column; gap: 10px; }
+
+    .alt-row { display: grid; grid-template-columns: 110px 1fr 42px; align-items: center; gap: 12px; }
+    .alt-row span:first-child { font-weight: 800; font-size: 0.92rem; }
+    .alt-track { height: 10px; background: var(--accent-soft); border-radius: 999px; overflow: hidden; }
+    .alt-fill { height: 100%; background: linear-gradient(90deg, var(--accent), var(--accent-2)); border-radius: 999px; }
+    .alt-row span:last-child { text-align: right; color: var(--muted); font-weight: 800; font-size: 0.88rem; }
+
+    .route-note {
+      color: var(--muted);
+      font-size: 0.9rem;
+      border: 1px dashed var(--line);
+      padding: 12px 14px;
+      border-radius: 16px;
+    }
+
+    /* ---------- Composer ---------- */
+    .composer-zone {
+      width: min(860px, 100%);
+      margin: 0 auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .stage.empty .composer-zone { width: min(760px, 100%); }
+
+    .composer {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+      padding: 10px 12px;
+      background: var(--composer);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      box-shadow: var(--shadow-sm);
+      transition: border-color 180ms ease, box-shadow 180ms ease, background-color 0.3s ease;
+    }
+
+    .composer:focus-within { border-color: var(--ring); box-shadow: var(--shadow-lg); }
+
+    .composer textarea {
+      flex: 1;
+      resize: none;
+      border: none;
+      outline: none;
+      background: transparent;
+      min-height: 40px;
+      max-height: 160px;
+      line-height: 1.45;
+      padding: 9px 4px;
+      color: var(--text);
+    }
+
+    .composer textarea::placeholder { color: var(--muted); }
+
+    .round-btn {
+      width: 36px;
+      height: 36px;
+      flex-shrink: 0;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: background-color 160ms ease, color 160ms ease;
+    }
+
+    .round-btn:hover { background: var(--accent-soft); color: var(--accent-dark); }
+
+    .chip-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 10px;
+      border-radius: 999px;
+      cursor: pointer;
+      font-weight: 700;
+      font-size: 0.9rem;
+      transition: background-color 160ms ease, color 160ms ease;
+    }
+
+    .chip-btn:hover { background: var(--accent-soft); color: var(--accent-dark); }
+
+    .send-btn {
+      width: 38px;
+      height: 38px;
+      flex-shrink: 0;
+      border: none;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      background: var(--tab-bg);
+      color: var(--muted);
+      transition: background-color 180ms ease, color 180ms ease, transform 160ms ease;
+    }
+
+    .send-btn.ready {
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #ffffff;
+      box-shadow: var(--shadow-sm);
+    }
+
+    .send-btn.ready:hover { transform: translateY(-1px); }
+
+    .footnote {
+      margin: 0;
+      text-align: center;
+      font-size: 0.76rem;
+      color: var(--muted);
+    }
+
+    @media (max-width: 860px) {
+      .comparison { grid-template-columns: 1fr; }
+      .route-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .alt-row { grid-template-columns: 88px 1fr 38px; }
+      .tab { padding: 8px 12px; font-size: 0.85rem; }
+      .chip-btn span { display: none; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar">
+      <button class="side-logo" title="EcoGPT" aria-label="EcoGPT home">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22c5.5-2.2 9-7.2 9-13V5h-4C8 5 3.5 9.6 3.5 16.8c0 2.3 1 4.4 2.8 5.9"></path>
+          <path d="M12 22c0-7 2-11 8-14"></path>
+        </svg>
+      </button>
+
+      <nav class="side-nav">
+        <button id="new-chat" class="side-btn" title="New chat" aria-label="New chat">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+            <path d="M18.4 2.6a2.1 2.1 0 0 1 3 3L12 15l-4 1 1-4Z"></path>
+          </svg>
+        </button>
+        <button class="side-btn" title="Search" aria-label="Search">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="m21 21-4.3-4.3"></path>
+          </svg>
+        </button>
+        <button class="side-btn" title="Pinned" aria-label="Pinned">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 17v5"></path>
+            <path d="M9 10.8 7.5 12.3a1 1 0 0 0 .7 1.7h7.6a1 1 0 0 0 .7-1.7L15 10.8V5l1-2H8l1 2Z"></path>
+          </svg>
+        </button>
+        <button class="side-btn" title="Chats" aria-label="Chats">
+          <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 11.5a8.4 8.4 0 0 1-9 8.4 8.6 8.6 0 0 1-3.2-.6L3 21l1.7-5.8A8.4 8.4 0 1 1 21 11.5Z"></path>
+          </svg>
+        </button>
+      </nav>
+
+      <div class="avatar" title="Krish B">KB</div>
+    </aside>
+
+    <div class="main">
+      <header class="topbar">
+        <div></div>
+        <div class="tabs" role="tablist" aria-label="EcoGPT modes">
+          <button class="tab active" type="button" role="tab" aria-selected="true" data-tab="compression">Prompt Compression</button>
+          <button class="tab" type="button" role="tab" aria-selected="false" data-tab="routing">Smart Routing</button>
+        </div>
+        <div class="top-actions">
+          <button id="theme-toggle" class="icon-btn" title="Toggle dark / light mode" aria-label="Toggle theme">
+            <svg class="icon-moon" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"></path>
+            </svg>
+            <svg class="icon-sun" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4"></circle>
+              <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <main class="stage" id="stage">
+        <div class="hero">
+          <h1>How can I help, Krish?</h1>
+          <p>Compressed prompts, smarter routing, lighter footprint.</p>
+        </div>
+
+        <section class="chat-shell active" id="compression-scroll" aria-label="Prompt compression chat">
+          <div class="chat" id="compression-chat" role="log" aria-live="polite"></div>
+        </section>
+
+        <section class="chat-shell" id="routing-scroll" aria-label="Smart routing chat">
+          <div class="chat" id="routing-chat" role="log" aria-live="polite"></div>
+        </section>
+
+        <div class="composer-zone">
+          <form id="composer-form" class="composer">
+            <button type="button" class="round-btn" title="Attach" aria-label="Attach">
+              <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 5v14M5 12h14"></path>
+              </svg>
+            </button>
+            <textarea id="prompt-input" rows="1" aria-label="Message" placeholder="Send a prompt to see side-by-side compression..."></textarea>
+            <button type="button" class="chip-btn" title="Eco mode on">
+              <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 22c5.5-2.2 9-7.2 9-13V5h-4C8 5 3.5 9.6 3.5 16.8c0 2.3 1 4.4 2.8 5.9"></path>
+                <path d="M12 22c0-7 2-11 8-14"></path>
+              </svg>
+              <span>Eco</span>
+            </button>
+            <button type="button" class="round-btn" title="Voice" aria-label="Voice input">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="9" y="2" width="6" height="12" rx="3"></rect>
+                <path d="M5 10a7 7 0 0 0 14 0M12 19v3"></path>
+              </svg>
+            </button>
+            <button type="submit" id="send-btn" class="send-btn" title="Send" aria-label="Send message">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 19V5M5 12l7-7 7 7"></path>
+              </svg>
+            </button>
+          </form>
+          <p class="footnote">EcoGPT saves tokens by compressing prompts and routing them to efficient models.</p>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script>
+    const stage = document.getElementById("stage");
+    const compressionChat = document.getElementById("compression-chat");
+    const routingChat = document.getElementById("routing-chat");
+    const input = document.getElementById("prompt-input");
+    const form = document.getElementById("composer-form");
+    const sendBtn = document.getElementById("send-btn");
+    const themeToggle = document.getElementById("theme-toggle");
+    const newChatBtn = document.getElementById("new-chat");
+    const tabs = document.querySelectorAll(".tab");
+
+    let activeTab = "compression";
+
+    const placeholders = {
+      compression: "Send a prompt to see side-by-side compression...",
+      routing: "Send a prompt to choose the most efficient model route..."
+    };
+
+    /* ---------- Theme ---------- */
+    function applyTheme(theme) {
+      document.documentElement.setAttribute("data-theme", theme);
+      try { localStorage.setItem("ecogpt-theme", theme); } catch (e) {}
+    }
+
+    themeToggle.addEventListener("click", function () {
+      const current = document.documentElement.getAttribute("data-theme");
+      applyTheme(current === "dark" ? "light" : "dark");
+    });
+
+    /* ---------- Helpers ---------- */
+    function esc(value) {
+      return String(value).replace(/[&<>"']/g, function (char) {
+        return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char];
+      });
+    }
+
+    function getStats(text) {
+      const chars = text.length;
+      const words = text.trim().split(/\s+/).filter(Boolean).length;
+      const tokens = Math.max(1, Math.ceil(chars / 4));
+      return { chars, words, tokens };
+    }
+
+    function currentChat() {
+      return activeTab === "compression" ? compressionChat : routingChat;
+    }
+
+    function updateStageState() {
+      stage.classList.toggle("empty", currentChat().children.length === 0);
+    }
+
+    function autoResize() {
+      input.style.height = "auto";
+      input.style.height = Math.min(input.scrollHeight, 160) + "px";
+    }
+
+    function refreshSend() {
+      sendBtn.classList.toggle("ready", input.value.trim().length > 0);
+    }
+
+    function scrollActiveChat() {
+      const shell = document.getElementById(activeTab + "-scroll");
+      shell.scrollTo({ top: shell.scrollHeight, behavior: "smooth" });
+    }
+
+    function switchTab(tab) {
+      activeTab = tab;
+
+      tabs.forEach(function (button) {
+        const isActive = button.dataset.tab === tab;
+        button.classList.toggle("active", isActive);
+        button.setAttribute("aria-selected", String(isActive));
+      });
+
+      document.getElementById("compression-scroll").classList.toggle("active", tab === "compression");
+      document.getElementById("routing-scroll").classList.toggle("active", tab === "routing");
+
+      input.placeholder = placeholders[tab];
+      updateStageState();
+      input.focus();
+    }
+
+    /* ---------- Message builders ---------- */
+    function addUserMessage(chat, text) {
+      chat.insertAdjacentHTML(
+        "beforeend",
+        `<div class="message user">
+           <div class="bubble">${esc(text)}</div>
+           <div class="meta">You</div>
+         </div>`
+      );
+    }
+
+    function addCompressionCard(chat, original, compressed, isSample) {
+      const originalStats = getStats(original);
+      const compressedStats = getStats(compressed);
+      const savings = originalStats.chars
+        ? Math.max(0, Math.round((1 - compressedStats.chars / originalStats.chars) * 100))
+        : 0;
+      const tokensSaved = Math.max(0, originalStats.tokens - compressedStats.tokens);
+      const badge = isSample ? '<span class="badge sample">Sample</span>' : '<span class="badge">Live</span>';
+      const savingsLabel = savings > 0 ? savings + "% smaller" : "No size change";
+
+      chat.insertAdjacentHTML(
+        "beforeend",
+        `<div class="message assistant">
+           <div class="assistant-card">
+             <div class="assistant-head">
+               <div class="assistant-avatar">E</div>
+               <div>
+                 <div class="assistant-name">EcoGPT</div>
+                 <div class="assistant-sub">Prompt compression comparison</div>
+               </div>
+               ${badge}
+             </div>
+             <div class="comparison">
+               <article class="card original">
+                 <div class="card-header">
+                   <h3 class="card-title">Without compression</h3>
+                   <span class="chip">${originalStats.words} words</span>
+                 </div>
+                 <div class="card-body">${esc(original)}</div>
+                 <div class="metrics">
+                   <span class="metric">${originalStats.chars} chars</span>
+                   <span class="metric">~${originalStats.tokens} tokens</span>
+                 </div>
+               </article>
+               <article class="card compressed">
+                 <div class="card-header">
+                   <h3 class="card-title">With compression</h3>
+                   <span class="chip strong">${savingsLabel}</span>
+                 </div>
+                 <div class="card-body">${esc(compressed)}</div>
+                 <div class="metrics">
+                   <span class="metric">${compressedStats.chars} chars</span>
+                   <span class="metric">~${compressedStats.tokens} tokens</span>
+                   <span class="metric saving">Saved ${tokensSaved} tokens</span>
+                 </div>
+               </article>
+             </div>
+           </div>
+         </div>`
+      );
+    }
+
+    function addRoutingCard(chat, route, isSample) {
+      const badge = isSample ? '<span class="badge sample">Sample</span>' : '<span class="badge">Live</span>';
+      const alternatives = route.alternatives.map(function (alt) {
+        return `<div class="alt-row">
+                  <span>${esc(alt.name)}</span>
+                  <div class="alt-track"><div class="alt-fill" style="width:${alt.score}%"></div></div>
+                  <span>${alt.score}%</span>
+                </div>`;
+      }).join("");
+
+      chat.insertAdjacentHTML(
+        "beforeend",
+        `<div class="message assistant">
+           <div class="assistant-card">
+             <div class="assistant-head">
+               <div class="assistant-avatar">E</div>
+               <div>
+                 <div class="assistant-name">EcoGPT</div>
+                 <div class="assistant-sub">Smart routing decision</div>
+               </div>
+               ${badge}
+             </div>
+             <div class="routing-card">
+               <div class="route-top">
+                 <div>
+                   <div class="route-label">Recommended route</div>
+                   <div class="route-name">${esc(route.name)}</div>
+                   <div class="route-reason">${esc(route.reason)}</div>
+                 </div>
+                 <div class="route-badge">${esc(route.badge)}</div>
+               </div>
+               <div class="route-meta">
+                 <div class="meta-box"><span>Confidence</span><strong>${route.confidence}%</strong></div>
+                 <div class="meta-box"><span>Latency</span><strong>${esc(route.latency)}</strong></div>
+                 <div class="meta-box"><span>Cost</span><strong>${esc(route.cost)}</strong></div>
+                 <div class="meta-box"><span>Carbon mode</span><strong>${esc(route.carbon)}</strong></div>
+               </div>
+               <div class="meter" aria-hidden="true"><div class="meter-fill" style="width:${route.confidence}%"></div></div>
+               <div class="route-section-title">Alternative routes</div>
+               <div class="alternatives">${alternatives}</div>
+               ${route.notes ? `<div class="route-note">${esc(route.notes)}</div>` : ""}
+             </div>
+           </div>
+         </div>`
+      );
+    }
+
+    /* ---------- Compression logic ---------- */
+    function compressPrompt(text) {
+      let compressed = text.replace(/\s+/g, " ").trim();
+
+      const phraseReplacements = [
+        [/\b(in order to)\b/gi, "to"],
+        [/\b(due to the fact that)\b/gi, "because"],
+        [/\b(at this point in time|at the present time)\b/gi, "now"],
+        [/\b(as soon as possible)\b/gi, "ASAP"],
+        [/\b(with regard to|with respect to)\b/gi, "about"],
+        [/\b(in the event that)\b/gi, "if"],
+        [/\b(for the purpose of)\b/gi, "for"],
+        [/\b(it is important that|it is important to)\b/gi, "must"],
+        [/\b(take into consideration|take into account)\b/gi, "consider"],
+        [/\b(make a decision)\b/gi, "decide"],
+        [/\b(provide assistance|provide help)\b/gi, "help"],
+        [/\b(has the ability to|have the ability to|is able to|are able to)\b/gi, "can"],
+        [/\b(in the near future)\b/gi, "soon"],
+        [/\b(on a daily basis)\b/gi, "daily"],
+        [/\b(on a weekly basis)\b/gi, "weekly"],
+        [/\b(on a monthly basis)\b/gi, "monthly"],
+        [/\b(in spite of)\b/gi, "despite"],
+        [/\b(in addition to)\b/gi, "besides"],
+        [/\b(a large number of)\b/gi, "many"],
+        [/\b(the majority of)\b/gi, "most"],
+        [/\b(each and every)\b/gi, "every"],
+        [/\b(first and foremost)\b/gi, "first"],
+        [/\b(in terms of)\b/gi, "for"]
+      ];
+
+      phraseReplacements.forEach(function (entry) {
+        compressed = compressed.replace(entry[0], entry[1]);
+      });
+
+      const openerPatterns = [
+        /^\s*(hi|hello|hey|good morning|good afternoon|good evening)\s*[,.!?]?\s*/i,
+        /^\s*(please|kindly|could you|can you|would you|will you)\s+/i,
+        /^\s*(i would like you to|i would love for you to|i want you to|i need you to|i am hoping you can|i hope you can|please help me to|please help me)\s*/i,
+        /\b(i was wondering if you could|i was hoping you could)\b/gi,
+        /\b(thanks|thank you|thank you so much|thanks a lot|i would really appreciate it|i would appreciate it|if that's okay|if possible)\b/gi
+      ];
+
+      openerPatterns.forEach(function (pattern) {
+        compressed = compressed.replace(pattern, "");
+      });
+
+      const fillers = ["just", "really", "very", "quite", "basically", "actually", "literally",
+        "essentially", "possibly", "probably", "maybe", "perhaps", "somewhat", "kind of",
+        "sort of", "a bit", "so", "well", "you know", "i think", "i believe",
+        "if that makes sense", "hope that makes sense"];
+
+      fillers.forEach(function (filler) {
+        const safe = filler.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const fillerRegex = new RegExp("(^|\\s)" + safe + "(?=\\s|$)", "gi");
+        compressed = compressed.replace(fillerRegex, "$1");
+      });
+
+      compressed = compressed
+        .replace(/\s+/g, " ")
+        .replace(/\s+([,.;!?])/g, "$1")
+        .replace(/[,;]{2,}/g, ",")
+        .replace(/^[\s,;]+|[\s,;]+$/g, "")
+        .trim();
+
+      const originalLength = text.trim().length;
+
+      if (originalLength && compressed.length > originalLength * 0.95) {
+        const stopWords = new Set(["the", "a", "an", "and", "or", "but", "if", "then", "than",
+          "that", "this", "these", "those", "is", "are", "was", "were", "be", "been", "being",
+          "of", "in", "on", "at", "to", "for", "with", "about", "into", "over", "after",
+          "before", "from", "as", "by", "it", "its", "i", "me", "my", "we", "our", "you",
+          "your", "he", "she", "they", "them", "their", "there", "here", "when", "where",
+          "why", "how", "what", "which", "who", "whom", "whose", "can", "could", "will",
+          "would", "should", "may", "might", "must", "do", "does", "did", "done", "have",
+          "has", "had", "having", "am", "some", "any", "all", "each", "every", "more",
+          "most", "other", "such", "only", "own", "same", "so", "too", "also", "because",
+          "while", "during", "against", "between", "through", "further", "once", "again",
+          "please", "just", "really", "very"]);
+
+        const words = compressed.split(" ");
+        const reduced = words.filter(function (word, index) {
+          const clean = word.toLowerCase().replace(/[^a-z0-9']/gi, "");
+          return index === 0 || !stopWords.has(clean) || /[0-9]/.test(clean);
+        }).join(" ");
+
+        if (reduced.length < compressed.length) compressed = reduced;
+      }
+
+      compressed = compressed
+        .replace(/\s+/g, " ")
+        .replace(/\s+([,.;!?])/g, "$1")
+        .replace(/^[\s,;]+|[\s,;]+$/g, "")
+        .trim();
+
+      if (!compressed) compressed = text.trim();
+      return compressed.charAt(0).toUpperCase() + compressed.slice(1);
+    }
+
+    /* ---------- Routing logic ---------- */
+    function routePrompt(text) {
+      const lower = text.toLowerCase();
+      const wordCount = text.trim().split(/\s+/).filter(Boolean).length;
+
+      function includes() {
+        const terms = Array.prototype.slice.call(arguments);
+        return terms.some(function (term) { return lower.includes(term); });
+      }
+
+      const routes = [
+        { name: "EcoNano", score: 18, latency: "Instant", cost: "Very low", reason: "Short, simple prompt that can be handled by a tiny low-energy model." },
+        { name: "EcoChat", score: 34, latency: "Fast", cost: "Low", reason: "Balanced model for everyday conversation and lightweight tasks." },
+        { name: "EcoReason", score: 28, latency: "Balanced", cost: "Medium", reason: "Deeper reasoning model for planning, analysis, and structured output." },
+        { name: "EcoCode", score: 20, latency: "Balanced", cost: "Medium", reason: "Specialized model for code generation, debugging, and technical work." },
+        { name: "EcoVision", score: 16, latency: "Balanced", cost: "Higher", reason: "Vision-focused model for images, layouts, diagrams, and visual tasks." },
+        { name: "EcoLong", score: 18, latency: "Slower", cost: "Higher", reason: "Long-context model for documents, large prompts, and detailed context." }
+      ];
+
+      function boost(name, amount) {
+        const route = routes.find(function (item) { return item.name === name; });
+        if (route) route.score += amount;
+      }
+
+      if (wordCount <= 12) boost("EcoNano", 26);
+      if (wordCount > 80) boost("EcoLong", 34);
+      if (wordCount > 180) boost("EcoLong", 18);
+      if (includes("code", "function", "bug", "error", "debug", "python", "javascript", "typescript", "java", "c++", "sql", "html", "css", "api", "regex", "compile", "exception")) boost("EcoCode", 48);
+      if (includes("image", "photo", "picture", "screenshot", "logo", "ui", "wireframe", "diagram", "chart", "poster", "visual")) boost("EcoVision", 50);
+      if (includes("plan", "strategy", "roadmap", "analysis", "analyze", "evaluate", "compare", "budget", "optimize", "research", "outline", "framework", "schedule")) boost("EcoReason", 38);
+      if (includes("summarize", "summary", "email", "message", "rewrite", "translate", "idea", "describe")) boost("EcoChat", 24);
+      if (/^(hi|hello|hey)\b/i.test(text.trim()) || includes("thanks", "thank you")) boost("EcoNano", 18);
+
+      const sorted = routes.slice().sort(function (a, b) { return b.score - a.score; });
+      const best = sorted[0];
+      const maxScore = best.score;
+
+      const confidence = Math.max(58, Math.min(97, Math.round(48 + maxScore * 0.55 + wordCount * 0.05)));
+
+      const alternatives = sorted.slice(1, 4).map(function (route) {
+        return {
+          name: route.name,
+          score: Math.max(6, Math.min(99, Math.round((route.score / maxScore) * 100)))
+        };
+      });
+
+      let badge = "Balanced choice";
+      if (best.name === "EcoNano") badge = "Lowest energy";
+      if (best.name === "EcoCode") badge = "Developer optimized";
+      if (best.name === "EcoVision") badge = "Visual optimized";
+      if (best.name === "EcoLong") badge = "Long context";
+      if (best.name === "EcoReason") badge = "Deep thinking";
+
+      let carbon = "Optimized";
+      if (best.name === "EcoNano") carbon = "Minimal";
+      if (best.name === "EcoLong") carbon = "Moderate";
+
+      return {
+        name: best.name,
+        badge: badge,
+        reason: best.reason,
+        confidence: confidence,
+        latency: best.latency,
+        cost: best.cost,
+        carbon: carbon,
+        alternatives: alternatives,
+        notes: "Routing considered " + wordCount + " words, prompt keywords, and estimated energy use."
+      };
+    }
+
+    /* ---------- Send flow ---------- */
+    function sendMessage() {
+      const text = input.value.trim();
+      if (!text) return;
+
+      if (activeTab === "compression") {
+        addUserMessage(compressionChat, text);
+        addCompressionCard(compressionChat, text, compressPrompt(text), false);
+      } else {
+        addUserMessage(routingChat, text);
+        addRoutingCard(routingChat, routePrompt(text), false);
+      }
+
+      input.value = "";
+      autoResize();
+      refreshSend();
+      updateStageState();
+      scrollActiveChat();
+      input.focus();
+    }
+
+    /* ---------- Samples ---------- */
+    function loadSamples() {
+      const compressionSample = "Hello! I would like you to please help me write a short product description for an eco-friendly water bottle. It should sound friendly, modern, and practical, and I would really appreciate it if you could keep it concise.";
+      const compressionSampleCompressed = "Write a short, friendly, modern product description for an eco-friendly water bottle. Keep it concise.";
+
+      addUserMessage(compressionChat, compressionSample);
+      addCompressionCard(compressionChat, compressionSample, compressionSampleCompressed, true);
+
+      const routingSample = "Plan a low-cost, low-carbon community garden layout, including materials, watering schedule, and a one-page outreach message.";
+
+      const routingSampleRoute = {
+        name: "EcoReason",
+        badge: "Deep thinking",
+        reason: "This prompt asks for planning, constraints, and practical recommendations, so a reasoning model is the best fit.",
+        confidence: 92,
+        latency: "Balanced",
+        cost: "Medium",
+        carbon: "Optimized",
+        alternatives: [
+          { name: "EcoChat", score: 56 },
+          { name: "EcoLong", score: 32 },
+          { name: "EcoNano", score: 14 }
+        ],
+        notes: "Sample routing decision based on prompt intent, length, and estimated energy use."
+      };
+
+      addUserMessage(routingChat, routingSample);
+      addRoutingCard(routingChat, routingSampleRoute, true);
+    }
+
+    /* ---------- Events ---------- */
+    tabs.forEach(function (button) {
+      button.addEventListener("click", function () {
+        switchTab(button.dataset.tab);
+      });
+    });
+
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      sendMessage();
+    });
+
+    input.addEventListener("keydown", function (event) {
+      if (event.key === "Enter" && !event.shiftKey) {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+    input.addEventListener("input", function () {
+      autoResize();
+      refreshSend();
+    });
+
+    newChatBtn.addEventListener("click", function () {
+      currentChat().innerHTML = "";
+      updateStageState();
+      input.focus();
+    });
+
+    /* ---------- Init ---------- */
+    loadSamples();
+    switchTab("compression");
+    autoResize();
+    refreshSend();
+  </script>
+</body>
+</html>
