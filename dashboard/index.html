@@ -127,6 +127,15 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
         <thead><tr><th>Model</th><th>Basis</th><th class="num">Requests</th><th class="num">Energy (Wh)</th><th class="num">GWP (g CO&#8322;e)</th></tr></thead>
         <tbody id="green-models"></tbody>
       </table></div>
+      <ul id="green-attribution" class="muted" style="margin:10px 0 0;padding-left:18px;font-size:12px"></ul>
+      <p class="muted" style="font-size:12px;margin:8px 0 0">Impacts estimated with the <a class="muted" href="https://github.com/mlco2/ecologits" style="color:inherit">EcoLogits</a> methodology (CC BY-SA 4.0); full attribution and license strings load above and in Settings → Green metrics.</p>
+    </div>
+    <div class="card">
+      <h2>Sessions</h2>
+      <div class="tablescroll"><table id="sessions-listwrap">
+        <thead><tr><th>Session</th><th>Source</th><th>Run label</th><th class="num">Requests</th><th class="num">Entries</th><th>Last seen</th></tr></thead>
+        <tbody id="sessions-rows"></tbody>
+      </table></div>
     </div>
   </div>
 
@@ -612,11 +621,13 @@ $("factors-save").onclick = async () => {
 
 /* ---------------- dashboard data ---------------- */
 async function loadDashboard() {
-  const [daily, totals, green, usage] = await Promise.all([
+  const [daily, totals, green, usage, sessions, greenSettings] = await Promise.all([
     api("/api/usage/daily?days=14"),
     api("/api/usage/totals"),
     api("/api/green/panel"),
     api("/api/usage?limit=12"),
+    api("/api/sessions"),
+    api("/api/green"),
   ]);
   const days = daily.days || [];
   const t = totals || {};
@@ -651,6 +662,12 @@ async function loadDashboard() {
     <td class="num">${fmt(m.requests)}</td>
     <td class="num">${sig(m.energy_kwh_mean != null ? m.energy_kwh_mean * 1000 : null)}</td>
     <td class="num">${sig(m.gwp_kgco2e_mean != null ? m.gwp_kgco2e_mean * 1000 : null)}</td></tr>`).join("");
+  $("green-attribution").innerHTML = (greenSettings.attribution || []).map((a) => `<li>${esc(a)}</li>`).join("");
+  $("sessions-rows").innerHTML = (sessions.sessions || []).slice(0, 20).map((s) => `<tr>
+    <td><code>${esc(s.key)}</code></td><td>${esc(s.session_source || "–")}</td>
+    <td>${esc(s.run_label || "–")}</td>
+    <td class="num">${fmt(s.requests)}</td><td class="num">${fmt(s.entries)}</td>
+    <td>${fmtWhen(s.last_ts)}</td></tr>`).join("");
 }
 
 /* ---------------- boot ---------------- */
