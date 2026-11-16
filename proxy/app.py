@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -150,7 +151,7 @@ def create_app(
     usage_log.init_db(db_path)
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0), transport=upstream_transport)
     sidecar = Sidecar(sidecar_log_path)
-    state: dict[str, Any] = {"sidecar_client": None}
+    state: dict[str, Any] = {"sidecar_client": None, "gateway_meta": {"ts": 0.0, "models": {}}}
     _background_tasks: set["asyncio.Task[None]"] = set()
 
     def build_sidecar_client() -> SidecarClient:
@@ -772,12 +773,69 @@ def create_app(
             media_type=resp.headers.get("content-type", "application/json"),
         )
 
+    GATEWAY_META_TTL_SECONDS = 300.0
+
+    def pretty_model_name(model_id: str) -> str:
+        """Human-readable fallback when the gateway has no metadata for a model."""
+        base_name, _, variant = model_id.partition(":")
+        words = [w for w in re.split(r"[-_/.\s]+", base_name) if w]
+        titled = " ".join(w if not w.islower() else w[:1].upper() + w[1:] for w in words)
+        return f"{titled} ({variant})" if variant else titled
+
+    async def gateway_model_metadata() -> dict[str, dict[str, Any]]:
+        """Model metadata from the primary gateway (display_name/name, sizes), cached.
+
+        Claude Code's model picker and Claude Desktop's gateway model discovery
+        both render display names, so /v1/models forwards real names instead of
+        the raw model id. Failures leave the previous cache in place.
+        """
+        entry = state["gateway_meta"]
+        now = time.time()
+        if entry["models"] and now - entry["ts"] < GATEWAY_META_TTL_SECONDS:
+            return entry["models"]
+        provider = settings.default_provider()
+        headers = {}
+        if settings.effective_key(provider):
+            headers["authorization"] = f"Bearer {settings.effective_key(provider)}"
+        try:
+            resp = await client.get(f"{base(provider)}/v1/models", headers=headers, timeout=15.0)
+        except httpx.HTTPError:
+            return entry["models"]
+        if resp.status_code < 400:
+            meta: dict[str, dict[str, Any]] = {}
+            for item in safe_json(resp).get("data", []):
+                if isinstance(item, dict) and item.get("id"):
+                    meta[str(item["id"])] = item
+            entry["models"] = meta
+            entry["ts"] = now
+        return entry["models"]
+
+    def model_row(model_id: str, meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
+        info = meta.get(model_id) or {}
+        display_name = str(info.get("display_name") or info.get("name") or "") or pretty_model_name(model_id)
+        row: dict[str, Any] = {
+            "type": "model",
+            "id": model_id,
+            "display_name": display_name,
+            "created_at": "1970-01-01T00:00:00Z",
+        }
+        description = info.get("description")
+        if description:
+            row["description"] = str(description)[:100]
+        context_length = info.get("context_length", info.get("max_input_tokens"))
+        if isinstance(context_length, (int, float)) and context_length > 0:
+            row["max_input_tokens"] = int(context_length)
+        return row
+
     @app.get("/v1/models")
-    async def list_models():
-        data = [
-            {"type": "model", "id": m, "display_name": m, "created_at": "1970-01-01T00:00:00Z"}
-            for m in settings.exposed_models
-        ]
+    async def list_models(limit: int | None = None, after_id: str | None = None):
+        meta = await gateway_model_metadata()
+        ids = list(settings.exposed_models)
+        if after_id and after_id in ids:
+            ids = ids[ids.index(after_id) + 1:]
+        if isinstance(limit, int) and limit >= 0:
+            ids = ids[:limit]
+        data = [model_row(m, meta) for m in ids]
         return {
             "data": data,
             "has_more": False,
@@ -1097,7 +1155,11 @@ def create_app(
     @app.post("/api/claude/apply")
     async def apply_claude():
         try:
-            claude_config.apply(claude_settings_path, settings.proxy_url(), settings.exposed_models)
+            # The gateway's own key goes into ANTHROPIC_AUTH_TOKEN: Claude Code
+            # sends it as the bearer credential the proxy substitutes upstream.
+            gateway_key = settings.effective_key(settings.default_provider())
+            claude_config.apply(claude_settings_path, settings.proxy_url(), settings.exposed_models,
+                                gateway_key=gateway_key)
         except (OSError, ValueError) as exc:
             return error_json(400, str(exc), "invalid_request_error")
         return claude_state()
@@ -1120,7 +1182,8 @@ def create_app(
         base_url = (update.base_url or settings.proxy_url()).strip().rstrip("/") or "/"
         api_key = update.api_key or (settings.effective_key() or "ecogpt-managed")
         try:
-            claude_desktop.apply(desktop_app_dir, base_url, api_key, backup_dir=desktop_backup_dir)
+            claude_desktop.apply(desktop_app_dir, base_url, api_key, backup_dir=desktop_backup_dir,
+                                 exposed_models=settings.exposed_models)
         except (OSError, ValueError) as exc:
             return error_json(400, str(exc), "invalid_request_error")
         return desktop_state()

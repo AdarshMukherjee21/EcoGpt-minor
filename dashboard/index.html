@@ -155,13 +155,13 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
             <h3>Claude Code</h3>
             <p id="claude-state" class="muted"></p>
             <div class="btnrow"><button class="primary" id="apply">Apply</button><button id="restore">Restore original</button><span id="claude-msg" class="feedback"></span></div>
-            <p class="muted">Points <code>~/.claude/settings.json</code> at this proxy. Restart Claude Code after applying; restore reverts byte-for-byte.</p>
+            <p class="muted">Points <code>~/.claude/settings.json</code> at this proxy with the bearer-gateway recipe: <code>ANTHROPIC_AUTH_TOKEN</code> carries the gateway key, <code>ANTHROPIC_API_KEY</code> is blanked and gateway model discovery is enabled so every exposed model appears in <code>/model</code>. Restart Claude Code after applying; restore reverts byte-for-byte.</p>
           </div>
           <div class="setupcard">
             <h3>Claude Desktop</h3>
             <p id="desktop-state" class="muted"></p>
             <div class="btnrow"><button class="primary" id="desktop-apply">Apply</button><button id="desktop-restore">Restore original</button><span id="desktop-msg" class="feedback"></span></div>
-            <p class="muted">Adds an "ecoGPT" gateway profile to Claude Desktop and activates it. Quit Claude Desktop <b>completely</b> first, then relaunch after applying — the app encrypts the key on next start. Restore swaps back the byte-for-byte backup.</p>
+            <p class="muted">Adds an "ecoGPT" gateway profile to Claude Desktop and activates it, pinned to the Bearer auth scheme with the exposed models seeded into the picker. Quit Claude Desktop <b>completely</b> first, then relaunch after applying — the app encrypts the key on next start. Restore swaps back the byte-for-byte backup.</p>
           </div>
         </div>
       </div>
@@ -304,6 +304,7 @@ function show(view) {
   $("nav-settings").classList.toggle("active", view === "settings");
   $("nav-dashboard").classList.toggle("active", view === "dashboard");
   if (view === "dashboard") loadDashboard();
+  if (view === "settings") loadModels();
 }
 $("nav-dashboard").onclick = () => show("dashboard");
 $("nav-settings").onclick = () => show("settings");
@@ -674,6 +675,7 @@ async function loadDashboard() {
 loadState().then(() => {
   loadFeatures();
   loadDashboard();
+  loadModels();   // Models & routing table must render on first open, not only on provider change
   setInterval(() => { if ($("view-dashboard").classList.contains("active")) loadDashboard(); }, 10000);
 });
 </script>

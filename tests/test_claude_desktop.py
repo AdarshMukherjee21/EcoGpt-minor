@@ -51,6 +51,29 @@ def test_apply_without_app_dir_fails_clean(tmp_path):
         apply(tmp_path / "missing", "http://x", "k", backup_dir=tmp_path / "b")
 
 
+def test_apply_seeds_models_and_bearer_scheme(tmp_path):
+    app_dir = tmp_path / "Claude-3p"
+    backup_dir = tmp_path / "backup"
+    _seed(app_dir)
+    apply(app_dir, "http://127.0.0.1:18090", "sk-test", backup_dir=backup_dir,
+          exposed_models=["openrouter/free", "nvidia/nemotron-3.5-lightning:free"])
+    profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text())
+    # The app's own auth-scheme enum is ["bearer", "x-api-key"] with default
+    # "bearer"; pinned explicitly so the static key is sent as a Bearer header.
+    assert profile["inferenceGatewayAuthScheme"] == "bearer"
+    assert profile["inferenceCredentialKind"] == "static"
+    # Model picker seeded from the proxy's exposed models (full IDs only)
+    assert profile["inferenceModels"] == ["openrouter/free", "nvidia/nemotron-3.5-lightning:free"]
+
+
+def test_apply_without_models_omits_inference_models(tmp_path):
+    app_dir = tmp_path / "Claude-3p"
+    _seed(app_dir)
+    apply(app_dir, "http://127.0.0.1:18090", "sk-test", backup_dir=tmp_path / "b")
+    profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text())
+    assert "inferenceModels" not in profile
+
+
 def test_restore_swaps_back_and_clears_backup(tmp_path):
     app_dir = tmp_path / "Claude-3p"
     backup_dir = tmp_path / "backup"

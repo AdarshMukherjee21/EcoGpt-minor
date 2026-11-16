@@ -9,6 +9,18 @@ key as plaintext and let the app encrypt it itself.
 
 Applying requires quitting Claude Desktop first (it rewrites these files on
 exit); restoring swaps the byte-for-byte backups taken on first apply.
+
+Auth findings from the app bundle (app.asar, build 5.11492.5, string
+inspection only): the gateway auth scheme is read from
+"inferenceGatewayAuthScheme" (enum ["bearer", "x-api-key"], default "bearer");
+with the "static" credential kind (inferenceGatewayApiKey) and the "bearer"
+scheme the app sends "Authorization: Bearer <key>" to the gateway (an
+"x-api-key" scheme would send "x-api-key: <key>" instead) and exposes the key
+to embedded Claude Code as ANTHROPIC_AUTH_TOKEN with ANTHROPIC_API_KEY blank.
+We pin the scheme explicitly and seed "inferenceModels" with the proxy's
+exposed model IDs so the model picker is populated without depending on live
+model discovery. Verifying end-to-end against a running Claude Desktop is not
+possible in this environment, so the live behavior remains unverified.
 """
 
 from __future__ import annotations
@@ -102,7 +114,7 @@ def _write_developer_settings(app_dir: Path) -> None:
     _write_json(path, data)
 
 
-def _write_entry(app_dir: Path, base_url: str, api_key: str) -> None:
+def _write_entry(app_dir: Path, base_url: str, api_key: str, exposed_models: list[str] | None = None) -> None:
     profile: dict[str, Any] = {
         "authentication": {"disableClaudeAiSignIn": True},
         "unstableDisableModelVerification": True,
@@ -111,7 +123,19 @@ def _write_entry(app_dir: Path, base_url: str, api_key: str) -> None:
         "bootstrapEnabled": False,
         "inferenceProvider": "gateway",
         "inferenceCredentialKind": "static",
+        # The app's auth-scheme enum is ["bearer", "x-api-key"] and its default
+        # is already "bearer"; pinning it makes the credential path explicit and
+        # stable: static keys under the "bearer" scheme are sent as
+        # "Authorization: Bearer <inferenceGatewayApiKey>" (and surface as
+        # ANTHROPIC_AUTH_TOKEN for embedded Claude Code), never as x-api-key.
+        "inferenceGatewayAuthScheme": "bearer",
     }
+    # Seed the model list from the proxy's exposed models. The app's model
+    # picker prefers profile models over live discovery, so the picker stays
+    # populated even when discovery cannot run. Entries must be full model IDs
+    # (the app rejects aliases like 'sonnet' here when discovery is off).
+    if exposed_models:
+        profile["inferenceModels"] = list(exposed_models)[:200]
     _write_json(_entry_path(app_dir, ECOGPT_ENTRY_ID), profile)
 
 
@@ -156,14 +180,14 @@ def status(app_dir: Path = DEFAULT_APP_DIR, backup_dir: Path = DEFAULT_BACKUP_DI
 
 
 def apply(app_dir: Path, base_url: str, api_key: str, *, name: str = "ecoGPT",
-          backup_dir: Path = DEFAULT_BACKUP_DIR) -> dict[str, Any]:
+          backup_dir: Path = DEFAULT_BACKUP_DIR, exposed_models: list[str] | None = None) -> dict[str, Any]:
     if not app_dir.exists():
         raise ValueError(
             f"Claude Desktop data not found at {app_dir}; start Claude Desktop once before applying"
         )
     _take_backups(app_dir, backup_dir)
     _write_developer_settings(app_dir)
-    _write_entry(app_dir, base_url, api_key)
+    _write_entry(app_dir, base_url, api_key, exposed_models)
     _set_applied(app_dir, ECOGPT_ENTRY_ID, name)
     return status(app_dir, backup_dir)
 

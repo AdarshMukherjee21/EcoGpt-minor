@@ -119,6 +119,56 @@ def test_models_endpoint_lists_only_exposed(tmp_path):
     assert [m["id"] for m in data] == ["gpt-6-luna"]
 
 
+def test_models_endpoint_serves_gateway_display_names(tmp_path):
+    """Claude Code's model picker shows display names, not raw ids."""
+    client = _client(tmp_path, ["gpt-6-luna"])
+    data = client.get("/v1/models").json()["data"]
+    assert data[0]["type"] == "model"
+    assert data[0]["id"] == "gpt-6-luna"
+    assert data[0]["display_name"] == "GPT-6 Luna"
+
+
+def test_models_endpoint_pretty_prints_unknown_ids(tmp_path):
+    """No metadata from the gateway -> readable fallback name from the id."""
+    client = _client(tmp_path, ["totally-unknown-model:free"])
+    data = client.get("/v1/models").json()["data"]
+    assert data[0]["display_name"] == "Totally Unknown Model (free)"
+
+
+def test_models_endpoint_supports_pagination(tmp_path):
+    """Gateway discovery pages with limit/after_id; the proxy answers them."""
+    client = _client(tmp_path, ["a-one", "b-two", "c-three"])
+    page1 = client.get("/v1/models", params={"limit": 2}).json()
+    assert [m["id"] for m in page1["data"]] == ["a-one", "b-two"]
+    assert page1["last_id"] == "b-two"
+    page2 = client.get("/v1/models", params={"after_id": "b-two", "limit": 2}).json()
+    assert [m["id"] for m in page2["data"]] == ["c-three"]
+
+
+def test_claude_apply_writes_bearer_env_with_gateway_key(tmp_path):
+    """/api/claude/apply must wire ANTHROPIC_AUTH_TOKEN (bearer), blank the
+    x-api-key credential and enable gateway model discovery."""
+    settings_path = tmp_path / "config.json"
+    save_settings(Settings(upstream_url="http://gateway.test", exposed_models=["claude-haiku-5-5"],
+                           api_key="sk-gateway-secret"), settings_path)
+    app = create_app(
+        settings_path=settings_path,
+        db_path=tmp_path / "usage.db",
+        claude_settings_path=tmp_path / "claude-settings.json",
+        upstream_transport=httpx.MockTransport(_upstream),
+    )
+    with TestClient(app) as client:
+        assert client.post("/api/claude/apply").status_code == 200
+    data = json.loads((tmp_path / "claude-settings.json").read_text(encoding="utf-8"))
+    env = data["env"]
+    assert env["ANTHROPIC_BASE_URL"] == "http://127.0.0.1:18090"
+    assert env["ANTHROPIC_AUTH_TOKEN"] == "sk-gateway-secret"
+    assert env["ANTHROPIC_API_KEY"] == ""
+    assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "claude-haiku-5-5"
+    assert data["availableModels"] == ["claude-haiku-5-5"]
+
+
 def test_settings_rejects_proxy_as_its_own_upstream(tmp_path):
     client = _client(tmp_path, [])
     resp = client.put("/api/settings", json={"upstream_url": "http://127.0.0.1:18090"})
