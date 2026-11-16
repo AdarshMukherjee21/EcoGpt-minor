@@ -1,11 +1,6 @@
 .venv/
-data/usage.db
-data/sessions/
-data/sidecar.log
 __pycache__/
 .pytest_cache/
+data/*
+!data/green_factors.json
 data/claude-desktop-backup/
-data/
-.venv/
-__pycache__/
-.pytest_cache/

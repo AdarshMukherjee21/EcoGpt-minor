@@ -1,0 +1,41 @@
+{
+  "region": {
+    "country": "IRL",
+    "grid_gco2_kwh": {"mean": 260, "min": 250, "max": 290},
+    "pue": {"mean": 1.15, "min": 1.10, "max": 1.20}
+  },
+  "knobs": {
+    "cached_input_fraction": 0.25,
+    "input_output_ratio": 1.0,
+    "embodied_share": 0.15
+  },
+  "attribution": [
+    "EcoLogits methodology (CC BY-SA 4.0), mlco2/ecologits",
+    "The AI Footprint anchors (CC BY 4.0), theaifootprint.com",
+    "GLM-5.2 / DeepSeek-V4-Pro: official model cards",
+    "Proprietary rows: operator priors over public estimates (rumor-tier)"
+  ],
+  "models": {
+    "claude-opus-4-5":   {"arch": {"total_b": 2500, "active_b": 200, "gpus": 14}, "wh_per_output_token": {"mean": 0.00217, "min": 0.00118, "max": 0.0043},  "basis": "estimated"},
+    "claude-opus-4-6":   {"arch": {"total_b": 2500, "active_b": 200, "gpus": 14}, "wh_per_output_token": {"mean": 0.00217, "min": 0.00115, "max": 0.0043},  "basis": "estimated"},
+    "claude-opus-5":     {"arch": {"total_b": 3000, "active_b": 250, "gpus": 16}, "wh_per_output_token": {"mean": 0.00293, "min": 0.00105, "max": 0.0059},  "basis": "estimated"},
+    "claude-opus-5-5":   {"arch": {"total_b": 3000, "active_b": 250, "gpus": 16}, "wh_per_output_token": {"mean": 0.00293, "min": 0.00105, "max": 0.0059},  "basis": "estimated"},
+    "claude-sonnet-4-5": {"arch": {"total_b": 1200, "active_b": 80,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000603, "min": 0.000457, "max": 0.0012},  "basis": "estimated"},
+    "claude-sonnet-4-6": {"arch": {"total_b": 1200, "active_b": 80,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000603, "min": 0.00046,  "max": 0.0012},   "basis": "estimated"},
+    "claude-sonnet-5":   {"arch": {"total_b": 1200, "active_b": 60,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000524, "min": 0.000356, "max": 0.001},    "basis": "estimated"},
+    "claude-sonnet-5-5": {"arch": {"total_b": 1200, "active_b": 60,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000524, "min": 0.000348, "max": 0.001},    "basis": "estimated"},
+    "claude-haiku-4-5":  {"arch": {"total_b": 750,  "active_b": 30,  "gpus": 4},  "wh_per_output_token": {"mean": 0.000231, "min": 0.0000345, "max": 0.00046}, "basis": "estimated"},
+    "claude-haiku-5-5":  {"arch": {"total_b": 750,  "active_b": 30,  "gpus": 4},  "wh_per_output_token": {"mean": 0.000231, "min": 0.0000316, "max": 0.00046}, "basis": "estimated"},
+    "gpt-5-5":           {"arch": {"total_b": 2500, "active_b": 200, "gpus": 14}, "wh_per_output_token": {"mean": 0.00217, "min": 0.0013,  "max": 0.0043},  "basis": "estimated"},
+    "gpt-5-6-sol":       {"arch": {"total_b": 3000, "active_b": 250, "gpus": 16}, "wh_per_output_token": {"mean": 0.00293, "min": 0.00132, "max": 0.0059},  "basis": "estimated"},
+    "gpt-5-6-terra":     {"arch": {"total_b": 1200, "active_b": 50,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000484, "min": 0.000444, "max": 0.00097}, "basis": "estimated"},
+    "gpt-5-6-luna":      {"arch": {"total_b": 750,  "active_b": 35,  "gpus": 4},  "wh_per_output_token": {"mean": 0.000242, "min": 0.000161, "max": 0.00048}, "basis": "estimated"},
+    "gpt-6-sol":         {"arch": {"total_b": 3000, "active_b": 250, "gpus": 16}, "wh_per_output_token": {"mean": 0.00293, "min": 0.000397, "max": 0.0059},  "basis": "estimated"},
+    "gpt-6-luna":        {"arch": {"total_b": 750,  "active_b": 35,  "gpus": 4},  "wh_per_output_token": {"mean": 0.000242, "min": 0.0000302, "max": 0.00048}, "basis": "estimated"},
+    "gpt-6-1-sol":       {"arch": {"total_b": 3000, "active_b": 250, "gpus": 16}, "wh_per_output_token": {"mean": 0.00293, "min": 0.000408, "max": 0.0059},  "basis": "estimated"},
+    "gpt-6-1-terra":     {"arch": {"total_b": 1200, "active_b": 50,  "gpus": 7},  "wh_per_output_token": {"mean": 0.000484, "min": 0.000391, "max": 0.00097}, "basis": "estimated"},
+    "deepseek-v4-pro":   {"arch": {"total_b": 1600, "active_b": 49,  "gpus": 9},  "wh_per_output_token": {"mean": 0.000617, "min": 0.00043,  "max": 0.00086}, "basis": "official"},
+    "glm-5-2":           {"arch": {"total_b": 753,  "active_b": 40,  "gpus": 4},  "wh_per_output_token": {"mean": 0.000254, "min": 0.00018,  "max": 0.00036}, "basis": "official"},
+    "liquid/lfm-3-1.7b:free": {"arch": {"total_b": 1.7, "active_b": 1.7, "gpus": 1}, "wh_per_output_token": {"mean": 0.0000415, "min": 0.0000205, "max": 0.000096}, "basis": "estimated"}
+  }
+}
