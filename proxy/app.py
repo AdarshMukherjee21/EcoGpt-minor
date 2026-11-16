@@ -86,6 +86,10 @@ class DesktopApply(BaseModel):
     api_key: Optional[str] = None
 
 
+class ClaudeApply(BaseModel):
+    model_classes: Optional[dict[str, str]] = None
+
+
 @dataclass
 class RequestContext:
     """State threaded through the pipeline stages of one /v1/messages round trip."""
@@ -1153,13 +1157,17 @@ def create_app(
         return {"models": models}
 
     @app.post("/api/claude/apply")
-    async def apply_claude():
+    async def apply_claude(update: Optional[ClaudeApply] = None):
         try:
             # The gateway's own key goes into ANTHROPIC_AUTH_TOKEN: Claude Code
             # sends it as the bearer credential the proxy substitutes upstream.
             gateway_key = settings.effective_key(settings.default_provider())
+            choices = (update.model_classes if update is not None else None) or {}
+            exposed = set(settings.exposed_models)
+            choices = {k: v for k, v in choices.items()
+                       if v and v != "auto" and v in exposed}
             claude_config.apply(claude_settings_path, settings.proxy_url(), settings.exposed_models,
-                                gateway_key=gateway_key)
+                                gateway_key=gateway_key, model_classes=choices)
         except (OSError, ValueError) as exc:
             return error_json(400, str(exc), "invalid_request_error")
         return claude_state()

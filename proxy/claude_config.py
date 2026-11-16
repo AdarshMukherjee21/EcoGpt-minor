@@ -29,35 +29,36 @@ from typing import Any
 
 DEFAULT_SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 
-# Env vars Claude Code reads to resolve each model class. Opus/Fable/Sonnet get
-# the first exposed model (general coding); Haiku/small-fast and subagents fall
-# back to a second exposed model when one is exposed, else the same model.
-ROLE_ENV_KEYS = (
-    "ANTHROPIC_MODEL",
-    "ANTHROPIC_DEFAULT_OPUS_MODEL",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL",
-    "ANTHROPIC_DEFAULT_FABLE_MODEL",
-    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
-    "ANTHROPIC_SMALL_FAST_MODEL",
-    "CLAUDE_CODE_SUBAGENT_MODEL",
-)
+# Env vars Claude Code reads to resolve each model class: class key -> env var.
+# Opus/Fable/Sonnet get the first exposed model (general coding); Haiku/small-fast
+# and subagents fall back to a second exposed model when one is exposed, else the
+# same model. All of them can be overridden per class from the dashboard.
+ROLE_ENV = {
+    "default": "ANTHROPIC_MODEL",
+    "opus": "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "sonnet": "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "fable": "ANTHROPIC_DEFAULT_FABLE_MODEL",
+    "haiku": "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "small_fast": "ANTHROPIC_SMALL_FAST_MODEL",
+    "subagent": "CLAUDE_CODE_SUBAGENT_MODEL",
+}
+PRIMARY_CLASSES = ("default", "opus", "sonnet", "fable")
+SECONDARY_CLASSES = ("haiku", "small_fast", "subagent")
 
 
-def role_model_env(exposed_models: list[str]) -> dict[str, str]:
-    """Map Claude Code's model-class env vars onto exposed models."""
+def role_model_env(exposed_models: list[str], model_classes: dict[str, str] | None = None) -> dict[str, str]:
+    """Map Claude Code's model-class env vars onto exposed (or user-chosen) models."""
     if not exposed_models:
         return {}
     primary = exposed_models[0]
     secondary = exposed_models[1] if len(exposed_models) > 1 else primary
-    values = {
-        "ANTHROPIC_MODEL": primary,
-        "ANTHROPIC_DEFAULT_OPUS_MODEL": primary,
-        "ANTHROPIC_DEFAULT_SONNET_MODEL": primary,
-        "ANTHROPIC_DEFAULT_FABLE_MODEL": primary,
-        "ANTHROPIC_DEFAULT_HAIKU_MODEL": secondary,
-        "ANTHROPIC_SMALL_FAST_MODEL": secondary,
-        "CLAUDE_CODE_SUBAGENT_MODEL": secondary,
-    }
+    chosen = model_classes or {}
+    values = {}
+    for class_key, env_key in ROLE_ENV.items():
+        override = str(chosen.get(class_key) or "").strip()
+        values[env_key] = override if override and override != "auto" else (
+            primary if class_key in PRIMARY_CLASSES else secondary
+        )
     return values
 
 
@@ -103,6 +104,11 @@ def status(settings_path: Path) -> dict[str, Any]:
             auth_token_set = bool(env.get("ANTHROPIC_AUTH_TOKEN"))
             api_key_blank = env.get("ANTHROPIC_API_KEY") == ""
             gateway_discovery = env.get("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY") == "1"
+            model_classes = {
+                class_key: str(env.get(env_key) or "")
+                for class_key, env_key in ROLE_ENV.items()
+                if env.get(env_key)
+            }
     except (ValueError, OSError) as exc:
         error = str(exc)
     return {
@@ -111,6 +117,7 @@ def status(settings_path: Path) -> dict[str, Any]:
         "auth_token_set": auth_token_set,
         "api_key_blank": api_key_blank,
         "gateway_discovery_enabled": gateway_discovery,
+        "model_classes": model_classes if isinstance(model_classes, dict) else {},
         "backup_exists": backup_path(settings_path).exists(),
         "error": error,
     }
@@ -121,6 +128,7 @@ def apply(
     proxy_url: str,
     exposed_models: list[str],
     gateway_key: str | None = None,
+    model_classes: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     backup = backup_path(settings_path)
     if not backup.exists():
@@ -142,7 +150,7 @@ def apply(
     if gateway_key:
         env["ANTHROPIC_AUTH_TOKEN"] = gateway_key
     env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] = "1"
-    env.update(role_model_env(list(exposed_models)))
+    env.update(role_model_env(list(exposed_models), model_classes))
     if exposed_models:
         data["availableModels"] = list(exposed_models)
     _write_text(settings_path, json.dumps(data, indent=2) + "\n")

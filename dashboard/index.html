@@ -154,6 +154,11 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
           <div class="setupcard">
             <h3>Claude Code</h3>
             <p id="claude-state" class="muted"></p>
+            <details class="adv">
+              <summary>Model classes</summary>
+              <div id="claude-classes" style="margin-top:10px"></div>
+              <p class="muted" style="font-size:11px">Pick which exposed model fills each Claude Code role, or leave on auto (first exposed model for opus/sonnet/fable, second for haiku/subagent).</p>
+            </details>
             <div class="btnrow"><button class="primary" id="apply">Apply</button><button id="restore">Restore original</button><span id="claude-msg" class="feedback"></span></div>
             <p class="muted">Points <code>~/.claude/settings.json</code> at this proxy with the bearer-gateway recipe: <code>ANTHROPIC_AUTH_TOKEN</code> carries the gateway key, <code>ANTHROPIC_API_KEY</code> is blanked and gateway model discovery is enabled so every exposed model appears in <code>/model</code>. Restart Claude Code after applying; restore reverts byte-for-byte.</p>
           </div>
@@ -337,6 +342,29 @@ function renderClaudeState() {
     `<br>Settings: <code>${esc(c.settings_path)}</code>` +
     (c.backup_exists ? " · backup saved" : "") +
     (c.error ? `<br><span class="bad">${esc(c.error)}</span>` : "");
+  renderClaudeClasses(c);
+}
+const CLASS_LABELS = { default: "Default (ANTHROPIC_MODEL)", opus: "Opus", sonnet: "Sonnet", fable: "Fable",
+  haiku: "Haiku", small_fast: "Small fast", subagent: "Subagent" };
+function renderClaudeClasses(c) {
+  const exposed = STATE.settings.exposed_models || [];
+  const chosen = c.model_classes || {};
+  const container = $("claude-classes");
+  if (!exposed.length) { container.innerHTML = "<p class='muted'>Expose models first.</p>"; return; }
+  container.innerHTML = Object.keys(CLASS_LABELS).map((key) => {
+    const current = chosen[key] || "";
+    const options = ['<option value="auto">auto</option>'].concat(
+      exposed.map((m) => `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`)).join("");
+    return `<div class="providerrow" style="grid-template-columns:150px 1fr">
+      <label class="muted" style="font-size:12px">${esc(CLASS_LABELS[key])}</label>
+      <select data-claude-class="${esc(key)}">${options}</select>
+    </div>`;
+  }).join("");
+}
+function claudeClassChoices() {
+  const picks = {};
+  document.querySelectorAll("[data-claude-class]").forEach((el) => { picks[el.dataset.claudeClass] = el.value; });
+  return picks;
 }
 function renderDesktopState() {
   const d = STATE.desktop;
@@ -461,7 +489,11 @@ function currentProviderInputs() {
 /* ---------------- one-click actions ---------------- */
 async function claudeAction(action) {
   try {
-    await api(`/api/claude/${action}`, { method: "POST" });
+    const body = action === "apply"
+      ? { method: "POST", body: JSON.stringify({ model_classes: claudeClassChoices() }),
+          headers: { "content-type": "application/json" } }
+      : { method: "POST" };
+    await api(`/api/claude/${action}`, body);
     $("claude-msg").textContent = action === "apply" ? "Applied — restart Claude Code" : "Restored — restart Claude Code";
     $("claude-msg").className = "feedback ok";
   } catch (err) { $("claude-msg").textContent = err.message; $("claude-msg").className = "feedback bad"; }

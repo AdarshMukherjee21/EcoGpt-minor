@@ -78,3 +78,19 @@ def test_role_env_without_second_model_falls_back_to_primary():
     assert values["ANTHROPIC_MODEL"] == "only-model"
     assert values["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "only-model"
     assert claude_config.role_model_env([]) == {}
+
+
+def test_model_class_overrides_win_over_auto(tmp_path):
+    path = tmp_path / "settings.json"
+    claude_config.apply(path, "http://127.0.0.1:18090",
+                        ["model-a", "model-b", "model-c"],
+                        model_classes={"opus": "model-c", "haiku": "auto", "small_fast": "model-b"})
+    env = json.loads(path.read_text(encoding="utf-8"))["env"]
+    assert env["ANTHROPIC_DEFAULT_OPUS_MODEL"] == "model-c"
+    assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "model-a"  # untouched class -> auto primary
+    assert env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] == "model-b"   # "auto" -> secondary fallback
+    assert env["ANTHROPIC_SMALL_FAST_MODEL"] == "model-b"
+    # dashboard round-trip: status() returns the effective per-class choices
+    state = claude_config.status(path)
+    assert state["model_classes"]["opus"] == "model-c"
+    assert state["model_classes"]["small_fast"] == "model-b"
