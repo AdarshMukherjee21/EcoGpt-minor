@@ -4,7 +4,8 @@ import re
 
 ROUTE_ANTHROPIC = "anthropic"
 ROUTE_RESPONSES = "responses"
-VALID_ROUTES = {ROUTE_ANTHROPIC, ROUTE_RESPONSES}
+ROUTE_CHAT = "chat"
+VALID_ROUTES = {ROUTE_ANTHROPIC, ROUTE_RESPONSES, ROUTE_CHAT}
 
 
 def normalize_model(name: str) -> str:

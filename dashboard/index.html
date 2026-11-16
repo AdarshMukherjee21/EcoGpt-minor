@@ -5,367 +5,450 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ecoGPT</title>
 <style>
-  :root {
-    --bg: #f4f6f8;
-    --card: #ffffff;
-    --border: #e4e9ef;
-    --border-strong: #d4dbe4;
-    --text: #1c2430;
-    --muted: #61708a;
-    --accent: #2563eb;
-    --accent-soft: #eaf0fe;
-    --ok: #0a7d48;
-    --ok-soft: #e6f6ee;
-    --warn: #b45309;
-    --err: #b42318;
-    --err-soft: #fdeceb;
-    --stage: #9a6700;
-    --stage-soft: #fdf3e0;
-    --req: #6b3fd4;
-    --radius: 12px;
-    --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .07);
-    --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body { margin: 0; font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
-         background: var(--bg); color: var(--text); }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 0 24px; }
-  .mono { font-family: var(--mono); }
+:root {
+  --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --border: #2a3140;
+  --text: #e6edf3; --muted: #8b949e; --accent: #3fb950; --accent2: #58a6ff;
+  --warn: #d29922; --bad: #f85149; --mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif; }
+code { font-family: var(--mono); font-size: 12px; background: var(--panel2); padding: 1px 5px; border-radius: 4px; }
+button { background: #21262d; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 14px; cursor: pointer; font-size: 13px; }
+button:hover { background: #2d333b; }
+button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+button.primary:hover { background: #2a7fff; }
+button.danger { border-color: var(--bad); color: var(--bad); }
+button:disabled { opacity: .45; cursor: default; }
+input, select { background: #0b0f14; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 6px 8px; font-size: 13px; }
+input[type=checkbox] { width: 16px; height: 16px; }
+h1, h2, h3 { font-weight: 600; }
+.muted { color: var(--muted); }
+.ok { color: var(--accent); }
+.bad { color: var(--bad); }
+.warn { color: var(--warn); }
 
-  /* Top bar */
-  .topbar { background: #fff; border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 20; }
-  .topbar .wrap { display: flex; align-items: baseline; gap: 16px; padding-top: 14px; padding-bottom: 14px; }
-  .topbar h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
-  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--ok); margin-right: 6px; vertical-align: 1px; }
+/* top bar */
+.topbar { display: flex; align-items: center; gap: 14px; padding: 10px 20px; border-bottom: 1px solid var(--border); background: var(--panel); position: sticky; top: 0; z-index: 5; }
+.topbar h1 { font-size: 17px; margin: 0; letter-spacing: .3px; }
+.topbar .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--accent); display: inline-block; margin-right: 6px; box-shadow: 0 0 6px var(--accent); }
+.topbar .dot.down { background: var(--bad); box-shadow: none; }
+.topbar .spacer { flex: 1; }
+.gearbtn { background: transparent; border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; display: flex; align-items: center; gap: 7px; }
+.gearbtn.active { border-color: var(--accent2); color: var(--accent2); }
+main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 16px; }
+.btnrow { display: flex; gap: 10px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+.feedback { font-size: 13px; }
+.feedback.ok { color: var(--accent); } .feedback.bad { color: var(--bad); }
 
-  /* Cards */
-  main.wrap { padding: 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: start; }
-  .card { background: var(--card); border: 1px solid var(--border); border-radius: var(--radius);
-          box-shadow: var(--shadow); padding: 18px 20px 20px; break-inside: avoid; }
-  .card.wide, .card.full { grid-column: 1 / -1; }
-  .card h2 { font-size: 15px; margin: 0 0 4px; letter-spacing: -.01em; }
-  .card h3 { font-size: 12.5px; margin: 22px 0 10px; color: var(--muted); text-transform: uppercase;
-             letter-spacing: .06em; font-weight: 600; }
-  .card h3:first-of-type { margin-top: 14px; }
-  .card p { margin: 6px 0; }
-  .muted { color: var(--muted); font-size: 12.5px; }
-  .ok { color: var(--ok); }
-  .bad { color: var(--err); }
+/* chips */
+.chips { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+.chip { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+.chip .label { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); }
+.chip .value { font-size: 20px; font-weight: 600; margin-top: 3px; }
+.chip .sub { font-size: 11px; color: var(--muted); }
+.chip.green { border-color: #1d4428; } .chip.green .value { color: var(--accent); }
+.chip.blue { border-color: #1b3a5c; } .chip.blue .value { color: var(--accent2); }
 
-  /* Controls */
-  button { font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border-strong);
-           background: #fff; color: var(--text); cursor: pointer; transition: background .12s, border-color .12s; }
-  button:hover { background: #f6f8fb; border-color: #b8c2d1; }
-  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; }
-  button.primary:hover { background: #1d4fd7; }
-  .btnrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 4px; }
-  .feedback { font-size: 12.5px; }
-  .feedback.ok { color: var(--ok); }
-  .feedback.bad { color: var(--err); }
+/* charts */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
+.chart-card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+.chart-card h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); font-weight: 500; }
+.legend { display: flex; gap: 14px; font-size: 11px; color: var(--muted); margin-top: 6px; }
+.legend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; vertical-align: baseline; }
+.legend .s0::before { background: #58a6ff; } .legend .s1::before { background: #3fb950; }
 
-  input[type=text], input[type=password], input[type=number], select {
-    font: inherit; padding: 6px 10px; border: 1px solid var(--border-strong); border-radius: 8px;
-    background: #fff; color: var(--text); min-width: 0;
-  }
-  input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
-  input[type=checkbox] { accent-color: var(--accent); width: 15px; height: 15px; }
-  label { font-size: 13px; }
+/* tables */
+.tablescroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+td { padding: 6px 8px; border-bottom: 1px solid #21283b; }
+tr:hover td { background: #1a212d; }
+th.num, td.num { text-align: right; }
+tr.overridden td { background: #14261a; }
 
-  /* Settings forms (schema-rendered) */
-  .field { display: grid; grid-template-columns: 250px 1fr; gap: 2px 14px; align-items: center; padding: 5px 0; }
-  .field label { font-size: 13px; font-weight: 500; }
-  .field .help { color: var(--muted); font-size: 11.5px; margin-top: -3px; }
-  .field .note { color: var(--warn); font-size: 11.5px; }
-
-  /* Tables */
-  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
-  th { text-align: left; color: var(--muted); font-weight: 600; font-size: 11px; text-transform: uppercase;
-       letter-spacing: .05em; padding: 7px 8px; border-bottom: 1px solid var(--border-strong); white-space: nowrap; }
-  td { padding: 7px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
-  tbody tr:hover td { background: #f8fafc; }
-  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
-  .tablescroll { overflow-x: auto; }
-  .rowlink { cursor: pointer; }
-
-  /* Badges & pills */
-  .pill { display: inline-block; padding: 1px 9px 2px; border-radius: 999px; font-size: 11px; font-weight: 600;
-          letter-spacing: .02em; white-space: nowrap; }
-  .pill.ok { background: var(--ok-soft); color: var(--ok); }
-  .pill.bad { background: var(--err-soft); color: var(--err); }
-  .pill.request { background: #f1ecfd; color: var(--req); }
-  .pill.stage { background: var(--stage-soft); color: var(--stage); }
-  .pill.response { background: var(--ok-soft); color: var(--ok); }
-  .pill.error { background: var(--err-soft); color: var(--err); }
-  .pill.model { background: #eef2f7; color: #354254; font-family: var(--mono); font-weight: 500; }
-  .pill.dim { background: #eef2f7; color: var(--muted); font-weight: 500; }
-
-  /* Stat chips (green panel + usage totals) */
-  .chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 8px 0 14px; }
-  .chip { background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; padding: 8px 14px; min-width: 132px; }
-  .chip .v { font-size: 16px; font-weight: 650; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
-  .chip .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
-
-  /* Green panel */
-  .green-totals .v { color: var(--ok); }
-  .attribution { margin-top: 14px; padding-top: 12px; border-top: 1px dashed var(--border-strong);
-                 color: var(--muted); font-size: 11.5px; }
-  .attribution ul { margin: 6px 0 0; padding-left: 18px; }
-  .attribution .license { font-style: italic; margin-top: 8px; }
-
-  /* Session timeline */
-  .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 10px 0 14px;
-             padding: 10px 12px; background: #f8fafc; border: 1px solid var(--border); border-radius: 10px; }
-  .filters .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); font-weight: 600; }
-  .kindtoggle { display: inline-flex; align-items: center; gap: 5px; cursor: pointer; user-select: none;
-                font-size: 12px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border-strong);
-                background: #fff; }
-  .kindtoggle.off { opacity: .35; }
-  details.trip { border: 1px solid var(--border); border-radius: 10px; margin: 10px 0; background: #fff;
-                 box-shadow: var(--shadow); overflow: hidden; }
-  details.trip[open] { border-color: var(--border-strong); }
-  details.trip summary { cursor: pointer; padding: 10px 14px; display: flex; flex-wrap: wrap; gap: 8px;
-                         align-items: center; font-size: 12.5px; list-style: none; }
-  details.trip summary::-webkit-details-marker { display: none; }
-  details.trip summary:hover { background: #f8fafc; }
-  .chev { color: var(--muted); font-size: 11px; width: 12px; }
-  details.trip[open] .chev { transform: rotate(90deg); }
-  .trip-body { padding: 4px 14px 12px; border-top: 1px solid var(--border); }
-  .evt { border-left: 3px solid var(--border); padding: 8px 10px; margin: 10px 0; background: #f8fafc;
-         border-radius: 0 8px 8px 0; font-size: 12.5px; word-break: break-word; }
-  .evt-kind { font-weight: 650; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-right: 8px; }
-  .evt-request { border-left-color: var(--req); }
-  .evt-request .evt-kind { color: var(--req); }
-  .evt-stage { border-left-color: var(--stage); background: var(--stage-soft); }
-  .evt-stage .evt-kind { color: var(--stage); }
-  .evt-response { border-left-color: var(--ok); }
-  .evt-response .evt-kind { color: var(--ok); }
-  .evt-error { border-left-color: var(--err); background: var(--err-soft); }
-  .evt-error .evt-kind { color: var(--err); }
-  .evt .meta { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 5px; color: var(--text); }
-  .evt .meta b { font-weight: 600; font-variant-numeric: tabular-nums; }
-  .evt .hash { color: var(--muted); font-family: var(--mono); font-size: 11px; }
-  .evt.hidden, .trip.hidden { display: none; }
-  pre { background: #f8fafc; border: 1px solid var(--border); border-radius: 8px; padding: 10px;
-        font-size: 11px; overflow: auto; }
-
-  @media (max-width: 900px) { main.wrap { grid-template-columns: 1fr; } .field { grid-template-columns: 1fr; } }
+/* settings */
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
+.tabs button { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; color: var(--muted); }
+.tabs button.active { color: var(--text); border-bottom-color: var(--accent2); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .grid2 { grid-template-columns: 1fr; } }
+.providerrow { display: grid; grid-template-columns: 140px 1fr 1fr 34px; gap: 8px; align-items: center; margin-bottom: 8px; }
+details.adv { border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-top: 12px; background: #12161d; }
+details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.field .help { font-size: 11px; color: #6e7681; margin-top: 2px; }
+.factor-grid { display: grid; grid-template-columns: 220px 90px repeat(3, 110px) 70px; gap: 6px; align-items: center; }
+.factor-grid.header { font-size: 11px; color: var(--muted); }
+.view { display: none; } .view.active { display: block; }
+.setupgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 860px) { .setupgrid { grid-template-columns: 1fr; } }
+.setupcard { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--panel2); }
+.setupcard h3 { margin: 0 0 8px; font-size: 14px; }
 </style>
 </head>
 <body>
-<header class="topbar"><div class="wrap">
+
+<div class="topbar">
   <h1>ecoGPT</h1>
-  <div class="muted" id="status">Loading…</div>
-</div></header>
+  <span id="status" class="muted"></span>
+  <span class="spacer"></span>
+  <button class="gearbtn" id="nav-dashboard" title="Dashboard">
+    Dashboard
+  </button>
+  <button class="gearbtn" id="nav-settings" title="Settings">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    Settings
+  </button>
+</div>
 
-<main class="wrap">
-
-<section class="card wide" id="gateway-card">
-  <h2>Gateway</h2>
-  <p class="muted">The upstream OpenAI/Anthropic-compatible endpoint. Client credentials are forwarded; a stored key is injected as Bearer only when a request carries none.</p>
-  <div class="field"><label for="upstream">Upstream URL</label><input type="text" id="upstream" style="width:340px"></div>
-  <div class="field"><label for="apikey">API key (optional)</label><div><input type="password" id="apikey" placeholder="leave blank to keep the current key"></div></div>
-  <div class="btnrow"><button class="primary" id="save-upstream">Save gateway</button><span id="upstream-msg" class="feedback"></span></div>
-</section>
-
-<section class="card full" id="models-card">
-  <h2>Models</h2>
-  <p class="muted">Ticked models are exposed to Claude Code. <code>responses</code> translates Anthropic Messages ⇄ OpenAI Responses; <code>auto</code> picks by name (<code>gpt-*</code> → responses).</p>
-  <div class="btnrow"><button id="refresh-models">Refresh from gateway</button><button class="primary" id="save-models">Save exposed models</button><span id="models-msg" class="feedback"></span></div>
-  <div class="tablescroll"><table>
-    <thead><tr><th>Expose</th><th>Model</th><th>ID</th><th>Route</th></tr></thead>
-    <tbody id="models"></tbody>
-  </table></div>
-</section>
-
-<section class="card" id="claude-card">
-  <h2>Claude Code</h2>
-  <p id="claude-state" class="muted"></p>
-  <div class="btnrow"><button class="primary" id="apply">Apply to Claude Code</button><button id="restore">Restore original settings</button><span id="claude-msg" class="feedback"></span></div>
-  <p class="muted">Restart Claude Code after applying or restoring. Your original settings.json is backed up the first time you apply and restore reverts it byte-for-byte.</p>
-</section>
-
-<section class="card" id="desktop-card">
-  <h2>Claude Desktop</h2>
-  <p id="desktop-state" class="muted"></p>
-  <div class="btnrow"><button class="primary" id="desktop-apply">Apply to Claude Desktop</button><button id="desktop-restore">Restore original config</button><span id="desktop-msg" class="feedback"></span></div>
-  <p class="muted">Adds an "ecoGPT" gateway profile to Claude Desktop's config library and points it at this proxy. Quit Claude Desktop first (it rewrites these files on exit), then relaunch after applying — the app itself encrypts the key on next start. A byte-for-byte backup of the original config files is taken the first time you apply; restore swaps it back.</p>
-</section>
-
-<section class="card" id="features-card">
-  <h2>Features &amp; run label</h2>
-  <p class="muted">Independently toggleable features, read from config.json at every request — the ablation harness can flip them between runs without a restart.</p>
-  <div id="features-form"></div>
-  <div class="btnrow"><button class="primary" id="features-save">Save feature settings</button><span id="features-msg" class="feedback"></span></div>
-</section>
-
-<section class="card" id="green-card">
-  <h2>Green metrics</h2>
-  <p class="muted">Per-request energy and carbon estimates (EcoLogits methodology). Impacts appear on ledger response events and usage rows when the <b>green_metrics</b> flag is on. The model factor table lives in <code>data/green_factors.json</code>.</p>
-  <div class="chips green-totals" id="green-chips"></div>
-  <h3>Per model</h3>
-  <div class="tablescroll"><table>
-    <thead><tr><th>Model</th><th>Basis</th><th class="num">Requests</th><th class="num">Energy (Wh)</th><th class="num">GWP (g CO₂e)</th></tr></thead>
-    <tbody id="green-models"></tbody>
-  </table></div>
-  <h3>Per day (UTC)</h3>
-  <div class="tablescroll"><table>
-    <thead><tr><th>Day</th><th class="num">Requests</th><th class="num">Energy (Wh) mean [min–max]</th><th class="num">GWP (g) mean [min–max]</th></tr></thead>
-    <tbody id="green-days"></tbody>
-  </table></div>
-  <h3>Per session</h3>
-  <div class="tablescroll"><table>
-    <thead><tr><th>Session</th><th>Run</th><th class="num">Requests</th><th class="num">Energy (Wh)</th><th class="num">GWP (g)</th></tr></thead>
-    <tbody id="green-sessions"></tbody>
-  </table></div>
-  <h3>Region &amp; knobs</h3>
-  <div id="green-form"></div>
-  <div class="btnrow"><button class="primary" id="green-save">Save green settings</button><span id="green-msg" class="feedback"></span></div>
-  <footer class="attribution" id="green-attribution"></footer>
-</section>
-
-<section class="card full" id="sidecar-card">
-  <h2>Headroom sidecar</h2>
-  <p id="sidecar-state" class="muted"></p>
-  <div class="btnrow"><button id="sidecar-start">Start</button><button id="sidecar-stop">Stop</button><button id="sidecar-restart">Restart</button><span id="sidecar-msg" class="feedback"></span></div>
-  <p id="model-state" class="muted"></p>
-  <div class="btnrow"><button id="model-download">Check / download Kompress model</button><span id="model-msg" class="feedback"></span></div>
-  <div id="headroom-form"></div>
-  <div class="btnrow"><button class="primary" id="headroom-save">Save Headroom settings</button><span id="headroom-msg" class="feedback"></span></div>
-  <h3>Sidecar statistics</h3>
-  <pre id="headroom-stats">Loading…</pre>
-</section>
-
-<section class="card full" id="usage-card">
-  <h2>Usage</h2>
-  <div class="chips" id="usage-totals"></div>
-  <div class="tablescroll"><table>
-    <thead><tr><th>Time</th><th>Model</th><th>Route</th><th>Status</th><th class="num">Input</th><th class="num">Output</th><th class="num">Cache r/w</th><th>Compressed</th><th class="num">Saved</th><th>Session</th><th>Note</th><th class="num">Energy (Wh)</th><th class="num">GWP (g)</th><th class="num">ms</th></tr></thead>
-    <tbody id="usage"></tbody>
-  </table></div>
-</section>
-
-<section class="card full" id="sessions-card">
-  <h2>Sessions</h2>
-  <p class="muted" id="sessions-note">Per-session ledger files from <code>data/sessions/</code> — metadata and content hashes only, never payloads.</p>
-  <div class="btnrow"><button id="sessions-refresh">Refresh</button><button id="sessions-back" style="display:none">← Back to sessions</button><span id="session-heading" class="feedback"></span></div>
-
-  <div id="sessions-listwrap" class="tablescroll"><table>
-    <thead><tr><th>Session</th><th>Source</th><th>Run label</th><th class="num">Requests</th><th class="num">Entries</th><th class="num">Size</th><th>First</th><th>Last</th></tr></thead>
-    <tbody id="sessions"></tbody>
-  </table></div>
-
-  <div id="session-timeline" style="display:none">
-    <div class="filters" id="trip-filters">
-      <span class="lbl">Kind</span>
-      <label class="kindtoggle" data-kind="request"><input type="checkbox" checked> Request</label>
-      <label class="kindtoggle" data-kind="stage"><input type="checkbox" checked> Stage</label>
-      <label class="kindtoggle" data-kind="response"><input type="checkbox" checked> Response</label>
-      <label class="kindtoggle" data-kind="error"><input type="checkbox" checked> Error</label>
-      <span class="lbl" style="margin-left:10px">Model</span>
-      <select id="trip-model"><option value="">all models</option></select>
+<main>
+  <!-- ============================== DASHBOARD ============================== -->
+  <div class="view active" id="view-dashboard">
+    <div class="chips" id="chips"></div>
+    <div class="charts">
+      <div class="chart-card"><h3>Tokens per day</h3><div id="chart-tokens"></div>
+        <div class="legend"><span class="s0">Input</span><span class="s1">Output</span></div></div>
+      <div class="chart-card"><h3>Cost per day (USD)</h3><div id="chart-cost"></div></div>
+      <div class="chart-card"><h3>Carbon per day (g CO&#8322;e)</h3><div id="chart-green"></div>
+        <div class="legend"><span class="s0">mean</span><span class="s1">max</span></div></div>
     </div>
-    <div id="trips"></div>
+    <div class="card">
+      <h2>Requests</h2>
+      <div class="tablescroll"><table>
+        <thead><tr><th>When</th><th>Model</th><th>Route</th><th class="num">In</th><th class="num">Out</th><th class="num">Cache rd</th><th class="num">Saved</th><th class="num">Cost</th><th class="num">ms</th><th class="num">Status</th></tr></thead>
+        <tbody id="usage-rows"></tbody>
+      </table></div>
+    </div>
+    <div class="card">
+      <h2>Green totals per model</h2>
+      <div class="tablescroll"><table>
+        <thead><tr><th>Model</th><th>Basis</th><th class="num">Requests</th><th class="num">Energy (Wh)</th><th class="num">GWP (g CO&#8322;e)</th></tr></thead>
+        <tbody id="green-models"></tbody>
+      </table></div>
+    </div>
   </div>
-</section>
 
+  <!-- ============================== SETTINGS ============================== -->
+  <div class="view" id="view-settings">
+    <div class="tabs">
+      <button data-tab="general" class="active">General</button>
+      <button data-tab="compression">Compression</button>
+      <button data-tab="green">Green metrics</button>
+    </div>
+
+    <div id="tab-general">
+      <div class="card">
+        <h2>One-click setup</h2>
+        <div class="setupgrid">
+          <div class="setupcard">
+            <h3>Claude Code</h3>
+            <p id="claude-state" class="muted"></p>
+            <div class="btnrow"><button class="primary" id="apply">Apply</button><button id="restore">Restore original</button><span id="claude-msg" class="feedback"></span></div>
+            <p class="muted">Points <code>~/.claude/settings.json</code> at this proxy. Restart Claude Code after applying; restore reverts byte-for-byte.</p>
+          </div>
+          <div class="setupcard">
+            <h3>Claude Desktop</h3>
+            <p id="desktop-state" class="muted"></p>
+            <div class="btnrow"><button class="primary" id="desktop-apply">Apply</button><button id="desktop-restore">Restore original</button><span id="desktop-msg" class="feedback"></span></div>
+            <p class="muted">Adds an "ecoGPT" gateway profile to Claude Desktop and activates it. Quit Claude Desktop <b>completely</b> first, then relaunch after applying — the app encrypts the key on next start. Restore swaps back the byte-for-byte backup.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Upstream providers</h2>
+        <p class="muted">Up to 3 gateways. The first is the default; individual models can be pinned to another provider in the model table below. Leave an API key blank to keep the stored one.</p>
+        <div id="provider-rows"></div>
+        <div class="btnrow"><button id="provider-add">+ Add provider</button></div>
+      </div>
+
+      <div class="card">
+        <h2>Models &amp; routing</h2>
+        <div class="btnrow">
+          <label class="muted">Browse provider:</label>
+          <select id="models-provider"></select>
+          <span id="models-msg" class="feedback"></span>
+        </div>
+        <div class="tablescroll"><table>
+          <thead><tr><th>Expose</th><th>Model</th><th>Route</th><th>Provider</th></tr></thead>
+          <tbody id="models"></tbody>
+        </table></div>
+        <div class="btnrow"><button class="primary" id="models-save">Save models &amp; routing</button>
+        <span class="muted"><code>chat</code> = OpenAI-format gateway (DeepSeek, OpenRouter); <code>responses</code> = OpenAI Responses API; <code>anthropic</code> = Messages API.</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Features</h2>
+        <div id="features-form"></div>
+        <div class="btnrow"><button class="primary" id="features-save">Save features</button><span id="features-msg" class="feedback"></span></div>
+      </div>
+    </div>
+
+    <div id="tab-compression" style="display:none">
+      <div class="card">
+        <h2>Headroom sidecar</h2>
+        <p id="sidecar-state" class="muted"></p>
+        <div class="btnrow">
+          <button id="sidecar-start">Start</button>
+          <button id="sidecar-stop">Stop</button>
+          <button id="sidecar-restart">Restart</button>
+          <button id="kompress-download" class="primary">Download Kompress model</button>
+          <span id="sidecar-msg" class="feedback"></span>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Compression settings</h2>
+        <p class="muted">The essentials. Everything else lives under Advanced.</p>
+        <div id="headroom-basic"></div>
+        <details class="adv">
+          <summary>Advanced settings</summary>
+          <div id="headroom-advanced" style="margin-top:10px"></div>
+        </details>
+        <div class="btnrow"><button class="primary" id="headroom-save">Save compression settings</button><span id="headroom-msg" class="feedback"></span></div>
+      </div>
+    </div>
+
+    <div id="tab-green" style="display:none">
+      <div class="card">
+        <h2>Region &amp; calibration</h2>
+        <div id="green-form"></div>
+        <div class="btnrow"><button class="primary" id="green-save">Save region &amp; knobs</button><span id="green-msg" class="feedback"></span></div>
+      </div>
+      <div class="card">
+        <h2>Model factors</h2>
+        <p class="muted">Wh per output token (min / mean / max) used for the energy estimate. Edited rows override the bundled factor table and are marked green. Blank a row and save applies bundled values again.</p>
+        <div class="tablescroll"><table>
+          <thead><tr><th>Model</th><th>Basis</th><th class="num">min</th><th class="num">mean</th><th class="num">max</th><th></th></tr></thead>
+          <tbody id="factors-rows"></tbody>
+        </table></div>
+        <div class="btnrow"><button class="primary" id="factors-save">Save model factors</button><span id="factors-msg" class="feedback"></span></div>
+      </div>
+      <div class="card"><h2>Attribution</h2><ul id="green-attribution" class="muted" style="margin:0;padding-left:18px"></ul></div>
+    </div>
+  </div>
 </main>
 
 <script>
+"use strict";
 const $ = (id) => document.getElementById(id);
-let gatewayModels = [], headroomSchema = [], featuresSchema = [], greenSchema = [], attribution = [];
-const tripFilters = { request: true, stage: true, response: true, error: true, model: "" };
-
-async function api(path, options = {}) {
-  const res = await fetch(path, { headers: { "Content-Type": "application/json" }, ...options });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body?.error?.message || `HTTP ${res.status}`);
-  return body;
-}
-
 function esc(value) {
   return String(value ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
-function fmt(n) { return n == null ? "–" : Number(n).toLocaleString(); }
-function sig(v, digits = 3) { const n = Number(v); return Number.isFinite(n) ? Number(n.toPrecision(digits)).toLocaleString() : "–"; }
-function whRatio(v) { return v == null ? "–" : Number((Number(v) * 1000).toPrecision(3)); }
-function gwpg(v) { return v == null ? "–" : Number((Number(v) * 1000).toPrecision(3)); }
-function bound(t, v) { return v == null ? "–" : `${sig(v)} [${sig(t.min)} – ${sig(t.max)}]`; }
-function money(v) { if (v == null) return "–"; const n = Number(String(v).split(": ").pop()); return Number.isFinite(n) ? n.toPrecision(3) : String(v); }
-
-async function loadState() {
-  const state = await api("/api/state");
-  $("upstream").value = state.settings.upstream_url;
-  $("status").innerHTML = `<span class="dot"></span>Proxy <b>${esc(state.proxy_url)}</b> &nbsp;·&nbsp; Gateway <b>${esc(state.settings.upstream_url)}</b> &nbsp;·&nbsp; API key ${state.settings.api_key_set ? "set" : "not set"}`;
-  const claude = state.claude;
-  $("claude-state").innerHTML =
-    (claude.applied ? '<span class="ok">Claude Code is routed through the proxy.</span>'
-                    : '<span class="bad">Claude Code is not routed through the proxy.</span>') +
-    `<br>ANTHROPIC_BASE_URL: <code>${esc(claude.base_url || "(unset)")}</code> · Settings file: <code>${esc(claude.settings_path)}</code>` +
-    (claude.error ? `<br><span class="bad">${esc(claude.error)}</span>` : "");
-  const desktop = state.desktop;
-  $("desktop-state").innerHTML =
-    (desktop.applied ? '<span class="ok">Claude Desktop is routed through the proxy.</span>'
-                     : '<span class="bad">Claude Desktop is not routed through the proxy.</span>') +
-    `<br>Gateway URL: <code>${esc(desktop.base_url || "(unset)")}</code> · Profile: <code>${esc(desktop.entry_name || "(none)")}</code> · Config: <code>${esc(desktop.app_dir)}</code>` +
-    (desktop.backup_exists ? " · <span class=\"ok\">backup saved</span>" : "") +
-    (desktop.error ? `<br><span class="bad">${esc(desktop.error)}</span>` : "");
-  return state;
+function fmt(n) { return n == null || n === "" ? "0" : Number(n).toLocaleString(); }
+function sig(v, digits = 3) { const n = Number(v); return Number.isFinite(n) && n !== 0 ? Number(n.toPrecision(digits)).toLocaleString() : (n === 0 ? "0" : "–"); }
+async function api(path, opts = {}) {
+  const resp = await fetch(path, opts);
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(data.detail || (data.error && data.error.message) || data.error || `HTTP ${resp.status}`);
+  return data;
+}
+function fmtWhen(ts) {
+  if (ts == null) return "–";
+  const d = typeof ts === "number" ? new Date(ts * 1000) : new Date(ts);
+  return d.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
 }
 
-async function loadModels() {
-  const state = await loadState();
+/* ---------------- SVG bar charts (no dependencies) ---------------- */
+function barChart(containerId, rows, series, unit = "") {
+  // rows: [{label, values:[n,...]}]; series: [{color}]
+  const el = $(containerId);
+  if (!rows.length) { el.innerHTML = "<p class='muted'>No data yet.</p>"; return; }
+  const W = Math.max(el.clientWidth || 320, 280), H = 150, padL = 44, padB = 20, padT = 8;
+  const gw = W - padL - 8, gh = H - padB - padT;
+  const max = Math.max(1, ...rows.flatMap((r) => r.values));
+  const groupW = gw / rows.length;
+  const barW = Math.min(26, (groupW - 6) / series.length);
+  let svg = `<svg width="${W}" height="${H}" class="chart">`;
+  for (const tick of [0, 0.5, 1]) {
+    const y = padT + gh * (1 - tick);
+    svg += `<line x1="${padL}" y1="${y}" x2="${W - 6}" y2="${y}" stroke="#2a3140" stroke-width="1"/>`;
+    svg += `<text x="${padL - 6}" y="${y + 4}" fill="#8b949e" font-size="10" text-anchor="end">${shortNum(max * tick)}</text>`;
+  }
+  rows.forEach((row, i) => {
+    row.values.forEach((v, s) => {
+      const h = gh * (v / max);
+      const x = padL + i * groupW + (groupW - barW * series.length) / 2 + s * barW;
+      const y = padT + gh - h;
+      svg += `<rect x="${x}" y="${y}" width="${barW - 1}" height="${Math.max(h, 0)}" rx="2" fill="${series[s].color}"><title>${esc(row.label)}: ${v}${unit ? " " + unit : ""}</title></rect>`;
+    });
+    const lx = padL + i * groupW + groupW / 2;
+    if (rows.length <= 16 || i % Math.ceil(rows.length / 16) === 0) {
+      svg += `<text x="${lx}" y="${H - 6}" fill="#8b949e" font-size="9" text-anchor="middle">${esc(row.label)}</text>`;
+    }
+  });
+  svg += "</svg>";
+  el.innerHTML = svg;
+}
+function shortNum(n) {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + "G";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + "k";
+  return Number(n.toFixed(1)).toString();
+}
+
+/* ---------------- navigation ---------------- */
+function show(view) {
+  document.querySelectorAll(".view").forEach((el) => el.classList.remove("active"));
+  $("view-" + view).classList.add("active");
+  $("nav-settings").classList.toggle("active", view === "settings");
+  $("nav-dashboard").classList.toggle("active", view === "dashboard");
+  if (view === "dashboard") loadDashboard();
+}
+$("nav-dashboard").onclick = () => show("dashboard");
+$("nav-settings").onclick = () => show("settings");
+document.querySelectorAll(".tabs button").forEach((btn) => {
+  btn.onclick = () => {
+    document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
+    btn.classList.add("active");
+    ["general", "compression", "green"].forEach((tab) => {
+      $("tab-" + tab).style.display = tab === btn.dataset.tab ? "block" : "none";
+    });
+    if (btn.dataset.tab === "compression") loadCompressionSettings();
+    if (btn.dataset.tab === "green") loadGreenSettings();
+  };
+});
+
+/* ---------------- state + settings loads ---------------- */
+let STATE = null;
+async function loadState() {
+  STATE = await api("/api/state");
+  const s = STATE.settings;
+  $("status").innerHTML = `<span class="dot"></span>Proxy <b style="color:var(--text)">${esc(STATE.proxy_url)}</b> · Gateway <b style="color:var(--text)">${esc(s.upstream_url)}</b> · key ${s.api_key_set ? "set" : "not set"}`;
+  renderClaudeState(); renderDesktopState(); renderProviders(s); renderModelsProviderOptions();
+  return STATE;
+}
+function renderClaudeState() {
+  const c = STATE.claude;
+  $("claude-state").innerHTML =
+    (c.applied ? "<span class='ok'>Routed through the proxy.</span>" : "<span class='bad'>Not routed through the proxy.</span>") +
+    `<br>Base URL: <code>${esc(c.base_url || "(unset)")}</code>` +
+    `<br>Settings: <code>${esc(c.settings_path)}</code>` +
+    (c.backup_exists ? " · backup saved" : "") +
+    (c.error ? `<br><span class="bad">${esc(c.error)}</span>` : "");
+}
+function renderDesktopState() {
+  const d = STATE.desktop;
+  $("desktop-state").innerHTML =
+    (d.applied ? "<span class='ok'>Routed through the proxy.</span>" : "<span class='bad'>Not routed through the proxy.</span>") +
+    `<br>Profile: <code>${esc(d.entry_name || "(none)")}</code> · Base URL: <code>${esc(d.base_url || "(unset)")}</code>` +
+    (d.backup_exists ? " · backup saved" : "") +
+    (d.error ? `<br><span class="bad">${esc(d.error)}</span>` : "");
+}
+
+/* ---------------- providers editor ---------------- */
+function renderProviders(s) {
+  const rows = $("provider-rows");
+  const providers = s.providers && s.providers.length ? s.providers : [{ name: "primary", url: s.upstream_url, api_key: null, api_key_set: !!s.api_key_set }];
+  rows.innerHTML = providers.map((p, i) => `
+    <div class="providerrow" data-idx="${i}">
+      <input type="text" data-pname value="${esc(p.name)}" placeholder="name">
+      <input type="text" data-purl value="${esc(p.url)}" placeholder="https://gateway.example/api">
+      <input type="password" data-pkey placeholder="${p.api_key_set ? "(saved — leave blank to keep)" : "API key"}">
+      ${i > 0 ? '<button title="Remove" data-pdel class="danger">✕</button>' : '<span class="muted" style="text-align:center">default</span>'}
+    </div>`).join("");
+  rows.querySelectorAll("[data-pdel]").forEach((btn) => {
+    btn.onclick = () => {
+      const container = btn.closest(".providerrow");
+      container.remove();
+      renumberProviders();
+    };
+  });
+}
+function renumberProviders() {
+  document.querySelectorAll("#provider-rows .providerrow").forEach((row, i) => row.dataset.idx = i);
+}
+$("provider-add").onclick = () => {
+  const list = $("provider-rows");
+  if (list.children.length >= 3) { providerMsg("Maximum of 3 providers", false); return; }
+  const div = document.createElement("div");
+  div.className = "providerrow";
+  div.innerHTML = `<input type="text" data-pname placeholder="name">
+    <input type="text" data-purl placeholder="https://gateway.example/api">
+    <input type="password" data-pkey placeholder="API key">
+    <button title="Remove" data-pdel class="danger">✕</button>`;
+  list.appendChild(div);
+  div.querySelector("[data-pdel]").onclick = (e) => { div.remove(); renumberProviders(); };
+};
+function providerMsg(text, ok) { const el = $("provider-msg") || document.createElement("span"); el.id = "provider-msg"; el.className = "feedback " + (ok ? "ok" : "bad"); el.textContent = text; $("provider-add").parentElement.appendChild(el); }
+
+async function saveProviders() {
+  const providers = [];
+  document.querySelectorAll("#provider-rows .providerrow").forEach((row) => {
+    providers.push({
+      name: row.querySelector("[data-pname]").value,
+      url: row.querySelector("[data-purl]").value,
+      api_key: row.querySelector("[data-pkey]").value,
+    });
+  });
   try {
-    const data = await api("/api/gateway/models");
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ providers }) });
+    providerMsg(`Saved ${providers.length} provider(s)`, true);
+    await loadState();
+  } catch (err) { providerMsg(err.message, false); }
+}
+
+/* ---------------- models table ---------------- */
+function renderModelsProviderOptions() {
+  const sel = $("models-provider");
+  const names = (STATE.settings.providers || []).map((p) => p.name);
+  if (!names.includes(sel.value)) sel.value = names[0] || "";
+  sel.innerHTML = names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join("");
+  sel.onchange = loadModels;
+}
+async function loadModels() {
+  try {
+    const data = await api(`/api/gateway/models?provider=${encodeURIComponent($("models-provider").value)}`);
     gatewayModels = data.models;
-    $("models-msg").textContent = `${gatewayModels.length} models from gateway`;
+    $("models-msg").textContent = `${gatewayModels.length} models`;
     $("models-msg").className = "feedback ok";
   } catch (err) {
-    gatewayModels = state.settings.exposed_models.map((id) => ({ id, display_name: id, exposed: true }));
-    $("models-msg").textContent = `Gateway unavailable: ${err.message}`;
+    gatewayModels = (STATE.settings.exposed_models || []).map((id) => ({ id, display_name: id, exposed: true, provider: $("models-provider").value }));
+    $("models-msg").textContent = `Provider unavailable: ${err.message}`;
     $("models-msg").className = "feedback bad";
   }
-  renderModels(state.settings.route_overrides);
-}
-
-function renderModels(overrides) {
+  const overrides = STATE.settings.route_overrides || {};
+  const mp = STATE.settings.model_providers || {};
+  const names = (STATE.settings.providers || []).map((p) => p.name);
   $("models").innerHTML = gatewayModels.map((m) => {
     const route = overrides[m.id] || "auto";
+    const prov = mp[m.id] || m.provider;
     return `<tr>
       <td><input type="checkbox" data-expose="${esc(m.id)}" ${m.exposed ? "checked" : ""}></td>
-      <td>${esc(m.display_name)}</td>
-      <td><code>${esc(m.id)}</code></td>
-      <td><select data-route="${esc(m.id)}">
-        ${["auto", "anthropic", "responses"].map((r) => `<option value="${r}" ${r === route ? "selected" : ""}>${r}</option>`).join("")}
-      </select></td>
+      <td title="${esc(m.id)}">${esc(m.display_name)} <code style="opacity:.7">${esc(m.id)}</code></td>
+      <td><select data-route="${esc(m.id)}">${["auto", "anthropic", "responses", "chat"].map((r) => `<option value="${r}" ${r === route ? "selected" : ""}>${r}</option>`).join("")}</select></td>
+      <td><select data-mprov="${esc(m.id)}">${names.map((n) => `<option value="${esc(n)}" ${n === prov ? "selected" : ""}>${esc(n)}</option>`).join("")}</select></td>
     </tr>`;
   }).join("");
 }
-
-async function saveModels() {
+let gatewayModels = [];
+$("models-save").onclick = async () => {
   const exposed = [...document.querySelectorAll("[data-expose]")].filter((el) => el.checked).map((el) => el.dataset.expose);
   const routes = {};
   document.querySelectorAll("[data-route]").forEach((el) => { if (el.value !== "auto") routes[el.dataset.route] = el.value; });
+  const mprov = {};
+  document.querySelectorAll("[data-mprov]").forEach((el) => { mprov[el.dataset.mprov] = el.value; });
   try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify({ exposed_models: exposed, route_overrides: routes }) });
-    $("models-msg").textContent = `Saved ${exposed.length} exposed model(s)`;
+    await api("/api/settings", { method: "PUT", body: JSON.stringify({ exposed_models: exposed, route_overrides: routes, model_providers: mprov, providers: currentProviderInputs() }) });
+    $("models-msg").textContent = "Saved";
     $("models-msg").className = "feedback ok";
+    await loadState();
   } catch (err) { $("models-msg").textContent = err.message; $("models-msg").className = "feedback bad"; }
-  await loadState();
+};
+function currentProviderInputs() {
+  const providers = [];
+  document.querySelectorAll("#provider-rows .providerrow").forEach((row) => {
+    providers.push({
+      name: row.querySelector("[data-pname]").value,
+      url: row.querySelector("[data-purl]").value,
+      api_key: row.querySelector("[data-pkey]").value,
+    });
+  });
+  return providers;
 }
 
-async function saveGateway() {
-  const payload = { upstream_url: $("upstream").value };
-  if ($("apikey").value) payload.api_key = $("apikey").value;
-  try {
-    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
-    $("upstream-msg").textContent = "Saved";
-    $("upstream-msg").className = "feedback ok";
-    $("apikey").value = "";
-    await loadModels();
-  } catch (err) { $("upstream-msg").textContent = err.message; $("upstream-msg").className = "feedback bad"; }
-}
-
+/* ---------------- one-click actions ---------------- */
 async function claudeAction(action) {
   try {
     await api(`/api/claude/${action}`, { method: "POST" });
@@ -374,420 +457,208 @@ async function claudeAction(action) {
   } catch (err) { $("claude-msg").textContent = err.message; $("claude-msg").className = "feedback bad"; }
   await loadState();
 }
-
 async function desktopAction(action) {
   try {
     await api(`/api/desktop/${action}`, { method: "POST" });
-    $("desktop-msg").textContent = action === "apply"
-      ? "Applied — quit (fully) and relaunch Claude Desktop"
-      : "Restored — quit and relaunch Claude Desktop";
+    $("desktop-msg").textContent = action === "apply" ? "Applied — quit & relaunch Claude Desktop" : "Restored — quit & relaunch Claude Desktop";
     $("desktop-msg").className = "feedback ok";
   } catch (err) { $("desktop-msg").textContent = err.message; $("desktop-msg").className = "feedback bad"; }
   await loadState();
 }
-
-/* ---- schema-rendered forms (headroom / features / green) ---- */
-
-function fieldHtml(entry, value) {
-  const id = `f-${entry.key}`;
-  const disabled = entry.available === false ? "disabled" : "";
-  const note = entry.available === false ? '<div class="note">Not available in this build.</div>' : "";
-  let input;
-  if (entry.type === "bool") {
-    input = `<input type="checkbox" id="${id}" data-key="${entry.key}" ${value ? "checked" : ""} ${disabled}>`;
-  } else if (entry.type === "choice") {
-    input = `<select id="${id}" data-key="${entry.key}" ${disabled}>${entry.choices.map((c) =>
-      `<option value="${esc(c)}" ${c === value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`;
-  } else if (entry.type === "int" || entry.type === "float") {
-    input = `<input type="number" id="${id}" data-key="${entry.key}" value="${value ?? ""}" ${disabled}>`;
-  } else {
-    input = `<input type="text" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}" ${disabled}>`;
-  }
-  const label = entry.label || entry.key;
-  return `<div class="field"><label for="${id}">${esc(label)}</label><div>${input}</div>
-    <div class="help">${esc(entry.help || "")}</div>${note}</div>`;
-}
-
-function renderFormInto(containerId, schema, values) {
-  const groups = [];
-  schema.forEach((entry) => { if (!groups.includes(entry.group)) groups.push(entry.group); });
-  $(containerId).innerHTML = groups.map((group) =>
-    `<h3>${esc(group)}</h3>` + schema.filter((e) => e.group === group).map((e) => fieldHtml(e, values[e.key])).join("")
-  ).join("");
-}
-
-function readForm(containerId) {
-  const values = {};
-  document.querySelectorAll(`#${containerId} [data-key]`).forEach((el) => {
-    if (el.disabled) return;
-    if (el.type === "checkbox") values[el.dataset.key] = el.checked;
-    else if (el.tagName === "SELECT") values[el.dataset.key] = el.value;
-    else if (el.type === "number") values[el.dataset.key] = el.value === "" ? null : Number(el.value);
-    else values[el.dataset.key] = el.value;
-  });
-  return values;
-}
-
-async function loadHeadroom() {
-  const data = await api("/api/headroom");
-  headroomSchema = data.schema;
-  renderFormInto("headroom-form", data.schema, data.values);
-  const s = data.sidecar;
-  $("sidecar-state").innerHTML =
-    (s.running ? '<span class="ok">Sidecar running</span>' : '<span class="bad">Sidecar stopped</span>') +
-    (s.running ? (s.healthy ? " · healthy" : ", not answering health checks yet") : "") +
-    ` &nbsp;·&nbsp; port <b>${esc(String(data.sidecar_url).split(":").pop())}</b>` +
-    (s.pid ? ` &nbsp;·&nbsp; pid <b>${s.pid}</b>` : "");
-  try {
-    const stats = await api("/api/headroom/stats");
-    $("headroom-stats").textContent = JSON.stringify(stats, null, 2).slice(0, 4000);
-  } catch (err) { $("headroom-stats").textContent = `Stats unavailable: ${err.message}`; }
-}
-
-async function saveHeadroom() {
-  try {
-    const result = await api("/api/headroom", { method: "PUT", body: JSON.stringify({ values: readForm("headroom-form") }) });
-    $("headroom-msg").textContent = result.restarted ? "Saved; the sidecar restarted with the new settings" : "Saved";
-    $("headroom-msg").className = "feedback ok";
-  } catch (err) { $("headroom-msg").textContent = err.message; $("headroom-msg").className = "feedback bad"; }
-  await loadHeadroom();
-}
-
-async function sidecarAction(action) {
-  try {
-    await api(`/api/headroom/${action}`, { method: "POST" });
-    $("sidecar-msg").textContent = `${action} requested`;
-    $("sidecar-msg").className = "feedback ok";
-  } catch (err) { $("sidecar-msg").textContent = err.message; $("sidecar-msg").className = "feedback bad"; }
-  await loadHeadroom();
-}
-
-async function loadModelCache() {
-  try {
-    const s = await api("/api/headroom/model");
-    const missing = (s.missing || []).length;
-    let html;
-    if (s.status === "cached") html = '<span class="ok">Kompress model cached — ML compression ready</span>';
-    else if (s.status === "downloading") html = '<span class="bad">Downloading the Kompress model…</span> the sidecar restarts itself when the cache is warm';
-    else if (s.status === "error") html = `<span class="bad">Cache problem: ${esc(s.detail || "unknown")}</span>${missing ? ` · missing: ${missing} artifact(s)` : ""}`;
-    else html = `<span class="bad">Kompress model not cached</span> (${missing} artifact(s) missing) — ML compression stays off until downloaded`;
-    $("model-state").innerHTML = html;
-  } catch (err) { $("model-state").innerHTML = `Model cache status unavailable: ${esc(err.message)}`; }
-}
-
-async function downloadModel() {
-  $("model-msg").textContent = "Checking…";
-  try {
-    const s = await api("/api/headroom/model", { method: "POST" });
-    $("model-msg").textContent = s.status === "cached" ? "Already cached" :
-      s.status === "downloading" ? "Download started — the sidecar restarts itself when finished" :
-      s.status === "error" ? `Failed: ${s.detail || "unknown"}` : `Status: ${s.status}`;
-  } catch (err) { $("model-msg").textContent = err.message; }
-  await loadModelCache();
-}
-
-async function loadFeatures() {
-  const data = await api("/api/features");
-  featuresSchema = data.schema;
-  renderFormInto("features-form", data.schema, data.values);
-}
-
-async function saveFeatures() {
-  try {
-    await api("/api/features", { method: "PUT", body: JSON.stringify({ values: readForm("features-form") }) });
-    $("features-msg").textContent = "Saved — effective on the next request, no restart needed";
-    $("features-msg").className = "feedback ok";
-  } catch (err) { $("features-msg").textContent = err.message; $("features-msg").className = "feedback bad"; }
-  await loadFeatures();
-}
-
-/* ---- green metrics ---- */
-
-async function loadGreen() {
-  const data = await api("/api/green");
-  greenSchema = data.schema;
-  attribution = data.attribution || [];
-  renderFormInto("green-form", data.schema, data.values);
-  $("green-attribution").innerHTML =
-    `<b>Methodology &amp; attribution</b> (required by the source licenses):<ul>` +
-    attribution.map((a) => `<li>${esc(a)}</li>`).join("") +
-    `</ul><span class="license">Energy and emissions figures are approximation intervals derived from these sources under CC BY-SA 4.0 / CC BY 4.0. The min–max bounds span two independent estimation methods and are not measurements.</span>`;
-}
-
-async function saveGreen() {
-  try {
-    await api("/api/green", { method: "PUT", body: JSON.stringify({ values: readForm("green-form") }) });
-    $("green-msg").textContent = "Saved";
-    $("green-msg").className = "feedback ok";
-  } catch (err) { $("green-msg").textContent = err.message; $("green-msg").className = "feedback bad"; }
-  await loadGreen();
-}
-
-async function loadGreenPanel() {
-  await Promise.all([loadGreenTotals(), loadGreenSessions()]);
-}
-
-async function loadGreenTotals() {
-  const p = await api("/api/green/panel");
-  const t = p.totals || {};
-  $("green-chips").innerHTML =
-    `<div class="chip"><div class="v">${fmt(t.requests)}</div><div class="l">impacted requests</div></div>` +
-    `<div class="chip"><div class="v">${t.energy_kwh_mean != null ? whRatio(t.energy_kwh_mean) : "–"}</div><div class="l">energy (Wh)</div></div>` +
-    `<div class="chip"><div class="v">${t.gwp_kgco2e_mean != null ? gwpg(t.gwp_kgco2e_mean) : "–"}</div><div class="l">gwp (g CO₂e)</div></div>` +
-    `<div class="chip"><div class="v">${fmt(p.by_model?.length ?? 0)}</div><div class="l">models</div></div>`;
-  $("green-models").innerHTML = (p.by_model || []).map((m) => `<tr>
-    <td><span class="pill model">${esc(m.model)}</span></td>
-    <td>${esc(m.model_basis || "–")}</td>
-    <td class="num">${fmt(m.requests)}</td>
-    <td class="num">${bound(m, m.energy_kwh_mean)}</td>
-    <td class="num">${bound(m, m.gwp_kgco2e_mean)}</td>
-  </tr>`).join("") || emptyRow(5, "no impacted requests yet — turn on the green_metrics flag");
-  $("green-days").innerHTML = (p.by_day || []).map((d) => `<tr>
-    <td><code>${esc(d.day)}</code></td>
-    <td class="num">${fmt(d.requests)}</td>
-    <td class="num">${bound(d, d.energy_kwh_mean)}</td>
-    <td class="num">${bound(d, d.gwp_kgco2e_mean)}</td>
-  </tr>`).join("") || emptyRow(4, "no data yet");
-}
-
-async function loadGreenSessions() {
-  let sessions = [];
-  try { sessions = (await api("/api/sessions")).sessions; } catch { sessions = []; }
-  const withGreen = await Promise.all(sessions.map(async (s) => {
-    try { return { s, summary: (await api(`/api/sessions/${encodeURIComponent(s.key)}/summary`)) }; }
-    catch { return null; }
-  }));
-  $("green-sessions").innerHTML = withGreen.filter((x) => x && x.summary.green && x.summary.green.energy_kwh).map(({ s, summary }) => `<tr>
-    <td><code>${esc((summary.session_key || s.key).slice(0, 40))}</code></td>
-    <td>${esc(summary.run_label || "–")}</td>
-    <td class="num">${fmt(summary.requests)}</td>
-    <td class="num">${bound(summary.green.energy_kwh, summary.green.energy_kwh.mean)}</td>
-    <td class="num">${bound(summary.green.gwp_kgco2e, summary.green.gwp_kgco2e.mean)}</td>
-  </tr>`).join("") || emptyRow(5, "no session impacts yet");
-}
-
-function emptyRow(cols, text) {
-  return `<tr><td colspan="${cols}" class="muted" style="text-align:center;padding:14px">${esc(text)}</td></tr>`;
-}
-
-/* ---- usage ---- */
-
-async function loadUsage() {
-  const [data, totals] = await Promise.all([api("/api/usage?limit=50"), api("/api/usage/totals")]);
-  $("usage-totals").innerHTML =
-    `<div class="chip"><div class="v">${fmt(totals.requests)}</div><div class="l">requests</div></div>` +
-    `<div class="chip"><div class="v">${fmt(totals.compressed_requests)}</div><div class="l">compressed</div></div>` +
-    `<div class="chip"><div class="v">${fmt(totals.tokens_saved)}</div><div class="l">tokens saved</div></div>` +
-    `<div class="chip"><div class="v">${fmt(totals.fallbacks)}</div><div class="l">fallbacks</div></div>` +
-    `<div class="chip"><div class="v">${fmt(totals.cache_read_tokens)}</div><div class="l">cache read</div></div>` +
-    `<div class="chip"><div class="v">${fmt(totals.cache_write_tokens)}</div><div class="l">cache write</div></div>`;
-  $("usage").innerHTML = data.rows.map((r) => {
-    const session = r.session_source ? `<span class="pill dim">${esc(r.session_source)}</span>` : "–";
-    const note = r.fallback ? `<span class="bad">${esc(r.fallback)}</span>` : (r.relayed ? '<span class="ok">relayed</span>' : "");
-    const short = (h) => h ? "…" + esc(String(h).slice(-8)) : "–";
-    return `<tr>
-    <td class="muted">${new Date(r.ts * 1000).toLocaleTimeString()}</td>
-    <td><span class="pill model">${esc(r.model)}</span></td>
-    <td class="muted">${esc(r.route)}${r.stream ? " ·stream" : ""}</td>
-    <td>${r.status}</td>
-    <td class="num">${fmt(r.input_tokens)}</td>
-    <td class="num">${fmt(r.output_tokens)}</td>
-    <td class="num">${fmt(r.cache_read_tokens)}/${fmt(r.cache_write_tokens)}</td>
-    <td>${r.compressed ? '<span class="pill stage">yes</span>' : '<span class="pill dim">no</span>'}</td>
-    <td class="num">${fmt(r.tokens_saved)}</td>
-    <td>${session}</td>
-    <td>${note}</td>
-    <td class="num">${r.energy_kwh_mean != null ? whRatio(r.energy_kwh_mean) : "–"}</td>
-    <td class="num">${r.gwp_kgco2e_mean != null ? gwpg(r.gwp_kgco2e_mean) : "–"}</td>
-    <td class="num">${fmt(r.duration_ms)}</td>
-  </tr>`;
-  }).join("");
-}
-
-/* ---- sessions ---- */
-
-async function loadSessions() {
-  const data = await api("/api/sessions");
-  const sessions = data.sessions;
-  $("sessions-note").textContent = sessions.length
-    ? `${sessions.length} ledger file(s). Click a session for its per-request timeline.`
-    : "No ledger files yet. Turn on session tracing (Features) and send some traffic.";
-  $("sessions").innerHTML = sessions.map((s) => `<tr class="rowlink" data-key="${esc(s.key)}">
-    <td><code>${esc((s.session_key || s.key).slice(0, 46))}</code></td>
-    <td class="muted">${esc(s.session_source || "–")}</td>
-    <td>${esc(s.run_label || "–")}</td>
-    <td class="num">${fmt(s.requests)}</td>
-    <td class="num">${fmt(s.entries)}</td>
-    <td class="num">${fmt(s.size_bytes)}</td>
-    <td class="muted">${s.first_ts ? new Date(s.first_ts).toLocaleString() : "–"}</td>
-    <td class="muted">${s.last_ts ? new Date(s.last_ts).toLocaleString() : "–"}</td>
-  </tr>`).join("") || emptyRow(8, "no sessions recorded");
-}
-
-function blocks(b) { return Object.entries(b || {}).map(([k, n]) => `${esc(k)}×${n}`).join(", "); }
-
-function usageChips(u) {
-  if (!u) return "";
-  return `<span>in <b>${fmt(u.input)}</b></span><span>out <b>${fmt(u.output)}</b></span>` +
-    (u.cache_read ? `<span>cache r <b>${fmt(u.cache_read)}</b></span>` : "") +
-    (u.cache_write ? `<span>cache w <b>${fmt(u.cache_write)}</b></span>` : "");
-}
-
-function impactsHtml(impacts) {
-  if (!impacts) return "";
-  const e = impacts.energy_kwh, g = impacts.gwp_kgco2e;
-  if (!e || !g) return `<div class="meta"><span class="muted">green: model unknown — no factors</span></div>`;
-  return `<div class="meta"><span>energy <b>${whRatio(e.mean)} Wh</b> <span class="muted">[${sig(e.min * 1000, 2)}–${sig(e.max * 1000, 2)}]</span></span>` +
-    `<span>GWP <b>${gwpg(g.mean)} g CO₂e</b> <span class="muted">[${sig(g.min * 1000, 2)}–${sig(g.max * 1000, 2)}]</span></span>` +
-    `<span class="muted">basis: ${esc(impacts.model_basis || "estimated")}</span></div>`;
-}
-
-function evtRequest(e) {
-  const msgs = (e.messages || []).map((m) =>
-    `<div>· ${esc(m.role)} ${fmt(m.chars)}ch <span class="muted">[${blocks(m.block_counts)}]</span> <span class="hash">${esc(String(m.hash || "").slice(0, 16))}</span></div>`).join("");
-  return `<div class="evt evt-request" data-kind="request"><span class="evt-kind">request</span>
-    <b>${esc(e.model || "")}</b>${e.requested_model && e.requested_model !== e.model ? ` <span class="muted">(as ${esc(e.requested_model)})</span>` : ""}
-    <span class="pill request">${esc(e.route || "")}</span>${e.stream ? '<span class="pill dim">stream</span>' : ""}
-    <div class="meta"><span>${e.message_count} message(s)</span>
-    ${e.system ? `<span>system ${fmt(e.system.chars)}ch <span class="hash">${esc(String(e.system.hash).slice(0, 16))}</span></span>` : ""}
-    ${e.tools && e.tools.count ? `<span>tools ${e.tools.count} <span class="hash">${esc(String(e.tools.hash || "").slice(0, 16))}</span></span>` : ""}</div>
-    ${msgs ? `<div class="meta" style="flex-direction:column">${msgs}</div>` : ""}</div>`;
-}
-
-function evtStage(e) {
-  const p = e.provenance || {};
-  const tokens = p.tokens_saved > 0
-    ? `<span>saved <b>${fmt(p.tokens_saved)}</b> (${fmt(p.tokens_before)} → ${fmt(p.tokens_after)})</span>` : `<span>nothing saved</span>`;
-  return `<div class="evt evt-stage" data-kind="stage"><span class="evt-kind">stage</span>
-    <b>${esc(e.feature || "")}</b> ${tokens} <span class="muted">attempt ${p.attempts}</span>
-    ${p.duration_ms != null ? `<span class="muted">${fmt(p.duration_ms)}ms</span>` : ""}
-    ${p.fallback ? `<br><span class="bad">${esc(p.fallback)}</span>` : ""}
-    ${p.turn_id ? `<br><span class="hash">turn ${esc(p.turn_id).slice(0, 8)}</span>` : ""}</div>`;
-}
-
-function evtResponse(e) {
-  return `<div class="evt evt-response" data-kind="response"><span class="evt-kind">response</span>
-    status <b>${e.status}</b> <span class="muted">${fmt(e.duration_ms)}ms</span>
-    ${e.stop_reason ? `<span class="pill dim">${esc(e.stop_reason)}</span>` : ""}
-    <div class="meta">${usageChips(e.usage)}
-    ${e.content ? `<span>reply ${fmt(e.content.chars)}ch <span class="muted">[${blocks(e.content.block_counts)}]</span></span>` : ""}</div>
-    ${impactsHtml(e.impacts)}</div>`;
-}
-
-function evtError(e) {
-  return `<div class="evt evt-error" data-kind="error"><span class="evt-kind">error</span>
-    <b>${esc(e.stage || "")}</b> — ${esc(e.message || "")}</div>`;
-}
-
-function tripHtml(trip) {
-  const r = trip.request || {};
-  const resp = trip.response;
-  const model = r.model || "(unknown)";
-  const status = resp ? resp.status : "–";
-  const u = resp ? resp.usage : null;
-  return `<details class="trip" data-model="${esc(model)}">
-    <summary><span class="chev">▶</span>
-      <span class="pill model">${esc(model)}</span>
-      <span class="pill ${resp && resp.status < 400 ? "response" : "bad"}">${status}</span>
-      ${u ? `<span class="muted">in ${fmt(u.input)} · out ${fmt(u.output)} · ${fmt(resp.duration_ms)}ms</span>` : `<span class="muted">no response</span>`}
-      <span class="hash" style="margin-left:auto">${esc((trip.request_id || "").slice(0, 8))}</span>
-      ${(trip.stages || []).length ? `<span class="pill stage">×${trip.stages.length} stage</span>` : ""}
-      ${(trip.errors || []).length ? `<span class="pill error">×${trip.errors.length} error</span>` : ""}
-    </summary>
-    <div class="trip-body">
-      ${r.type ? evtRequest(r) : ""}
-      ${(trip.stages || []).map(evtStage).join("")}
-      ${resp ? evtResponse(resp) : ""}
-      ${(trip.errors || []).map(evtError).join("")}
-    </div>
-  </details>`;
-}
-
-function applyTripFilters() {
-  document.querySelectorAll("#trips details.trip").forEach((trip) => {
-    const model = trip.dataset.model;
-    const modelOk = !tripFilters.model || tripFilters.model === model;
-    let anyVisible = false;
-    trip.querySelectorAll(".evt").forEach((evt) => {
-      const kindOk = tripFilters[evt.dataset.kind] !== false;
-      const visible = kindOk && modelOk;
-      evt.classList.toggle("hidden", !visible);
-      if (visible) anyVisible = true;
-    });
-    trip.classList.toggle("hidden", !modelOk || !anyVisible);
-  });
-}
-
-async function showSession(key) {
-  const data = await api(`/api/sessions/${encodeURIComponent(key)}`);
-  $("session-heading").innerHTML = `<code>${esc(data.session_key || key)}</code> · ${esc(data.session_source || "–")}` +
-    (data.run_label ? ` · run <b>${esc(data.run_label)}</b>` : "");
-  const trips = data.round_trips || [];
-  $("trips").innerHTML = trips.map(tripHtml).join("") ||
-    `<p class="muted" style="padding:14px;text-align:center">No round trips recorded.</p>`;
-  const models = [...new Set(trips.map((t) => t.request && t.request.model).filter(Boolean))];
-  $("trip-model").innerHTML = `<option value="">all models</option>` +
-    models.map((m) => `<option value="${esc(m)}" ${tripFilters.model === m ? "selected" : ""}>${esc(m)}</option>`).join("");
-  tripFilters.model = models.includes(tripFilters.model) ? tripFilters.model : "";
-  applyTripFilters();
-  $("sessions-listwrap").style.display = "none";
-  $("session-timeline").style.display = "block";
-  $("sessions-back").style.display = "inline-block";
-  document.getElementById("sessions-card").scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-function backToSessions() {
-  $("sessions-listwrap").style.display = "block";
-  $("session-timeline").style.display = "none";
-  $("sessions-back").style.display = "none";
-  $("session-heading").textContent = "";
-}
-
-/* ---- wiring ---- */
-
-$("save-upstream").onclick = saveGateway;
-$("refresh-models").onclick = loadModels;
-$("save-models").onclick = saveModels;
 $("apply").onclick = () => claudeAction("apply");
 $("restore").onclick = () => claudeAction("restore");
 $("desktop-apply").onclick = () => desktopAction("apply");
 $("desktop-restore").onclick = () => desktopAction("restore");
-$("headroom-save").onclick = saveHeadroom;
-$("sidecar-start").onclick = () => sidecarAction("start");
-$("sidecar-stop").onclick = () => sidecarAction("stop");
-$("sidecar-restart").onclick = () => sidecarAction("restart");
-$("features-save").onclick = saveFeatures;
-$("green-save").onclick = saveGreen;
-$("model-download").onclick = downloadModel;
-$("sessions-refresh").onclick = loadSessions;
-$("sessions-back").onclick = backToSessions;
-$("sessions").addEventListener("click", (ev) => {
-  const tr = ev.target.closest("tr[data-key]");
-  if (tr) showSession(tr.dataset.key);
-});
-document.querySelectorAll(".kindtoggle").forEach((toggle) => {
-  toggle.querySelector("input").addEventListener("change", (ev) => {
-    tripFilters[toggle.dataset.kind] = ev.target.checked;
-    toggle.classList.toggle("off", !ev.target.checked);
-    applyTripFilters();
-  });
-});
-$("trip-model").addEventListener("change", (ev) => { tripFilters.model = ev.target.value; applyTripFilters(); });
 
-async function refreshAll() {
-  try { await loadModels(); } catch (e) { $("status").textContent = `Proxy unreachable: ${e.message}`; }
-  try { await loadHeadroom(); } catch {}
-  try { await loadFeatures(); } catch {}
-  try { await loadModelCache(); } catch {}
-  try { await loadUsage(); } catch {}
-  try { await loadSessions(); } catch {}
+/* save providers when changed (also on blur of provider inputs) */
+document.addEventListener("change", (e) => {
+  if (e.target.closest && e.target.closest("#provider-rows")) saveProvidersSoon();
+});
+let providerTimer = null;
+function saveProvidersSoon() {
+  clearTimeout(providerTimer);
+  providerTimer = setTimeout(saveProviders, 600);
 }
-refreshAll();
-try { loadGreenPanel(); } catch {}
-setInterval(loadUsage, 5000);
-setInterval(loadSessions, 8000);
-setInterval(loadModelCache, 8000);
-setInterval(loadGreenPanel, 20000);
+
+/* ---------------- schema-rendered forms ---------------- */
+function fieldHtml(entry, value) {
+  let input;
+  const id = `${entry.key}-field`;
+  if (entry.type === "bool") {
+    input = `<input type="checkbox" id="${id}" data-key="${entry.key}" ${value ? "checked" : ""}>`;
+  } else if (entry.type === "choice") {
+    input = `<select id="${id}" data-key="${entry.key}">${entry.choices.map((c) =>
+      `<option value="${esc(c)}" ${c === value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`;
+  } else if (entry.type === "int" || entry.type === "float") {
+    input = `<input type="number" id="${id}" data-key="${entry.key}" value="${value ?? ""}">`;
+  } else {
+    input = `<input type="text" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}">`;
+  }
+  return `<div class="field"><label for="${id}">${esc(entry.label || entry.key)}</label><div>${input}</div>` +
+    `<div class="help">${esc(entry.help || "")}</div></div>`;
+}
+function renderFormInto(containerId, schema, values) {
+  $(containerId).innerHTML = schema.map((e) => fieldHtml(e, values[e.key])).join("");
+}
+function readForm(containerId) {
+  const values = {};
+  document.querySelectorAll(`#${containerId} [data-key]`).forEach((el) => {
+    values[el.dataset.key] = el.type === "checkbox" ? el.checked : el.value;
+  });
+  return values;
+}
+
+/* ---------------- features ---------------- */
+async function loadFeatures() {
+  const data = await api("/api/features");
+  renderFormInto("features-form", data.schema, data.values);
+}
+$("features-save").onclick = async () => {
+  try {
+    await api("/api/features", { method: "PUT", body: JSON.stringify({ values: readForm("features-form") }) });
+    $("features-msg").textContent = "Saved"; $("features-msg").className = "feedback ok";
+  } catch (err) { $("features-msg").textContent = err.message; $("features-msg").className = "feedback bad"; }
+};
+
+/* ---------------- compression tab ---------------- */
+const HEADROOM_ESSENTIAL = new Set(["sidecar_enabled", "token_budget", "HEADROOM_MODE", "HEADROOM_SAVINGS_PROFILE",
+  "HEADROOM_DISABLE_KOMPRESS", "failure_policy", "relay_usage"]);
+async function loadCompressionSettings() {
+  const data = await api("/api/headroom");
+  const sidecar = data.sidecar || {};
+  $("sidecar-state").innerHTML = `<span class="${sidecar.running ? "ok" : "bad"}">${sidecar.running ? "Running" : "Not running"}</span>` +
+    ` · healthy: <span class="${sidecar.healthy ? "ok" : "bad"}">${sidecar.healthy ? "yes" : "no"}</span>` +
+    ` · sidecar at <code>${esc(data.sidecar_url)}</code>`;
+  const schema = data.schema || [];
+  renderFormInto("headroom-basic", schema.filter((e) => HEADROOM_ESSENTIAL.has(e.key)), data.values);
+  renderFormInto("headroom-advanced", schema.filter((e) => !HEADROOM_ESSENTIAL.has(e.key)), data.values);
+}
+["sidecar-start", "sidecar-stop", "sidecar-restart"].forEach((id) => {
+  const action = id.replace("sidecar-", "");
+  $(id).onclick = async () => {
+    try {
+      await api(`/api/headroom/${action}`, { method: "POST" });
+      $("sidecar-msg").textContent = `${action} done`; $("sidecar-msg").className = "feedback ok";
+    } catch (err) { $("sidecar-msg").textContent = err.message; $("sidecar-msg").className = "feedback bad"; }
+    loadCompressionSettings();
+  };
+});
+$("kompress-download").onclick = async () => {
+  try {
+    await api("/api/headroom/model", { method: "POST" });
+    $("sidecar-msg").textContent = "Kompress download started (sidecar restarts when warm)";
+    $("sidecar-msg").className = "feedback ok";
+  } catch (err) { $("sidecar-msg").textContent = err.message; $("sidecar-msg").className = "feedback bad"; }
+};
+$("headroom-save").onclick = async () => {
+  const values = { ...readForm("headroom-basic"), ...readForm("headroom-advanced") };
+  try {
+    await api("/api/headroom", { method: "PUT", body: JSON.stringify({ values }) });
+    $("headroom-msg").textContent = "Saved"; $("headroom-msg").className = "feedback ok";
+  } catch (err) { $("headroom-msg").textContent = err.message; $("headroom-msg").className = "feedback bad"; }
+  loadCompressionSettings();
+};
+
+/* ---------------- green tab ---------------- */
+async function loadGreenSettings() {
+  const data = await api("/api/green");
+  renderFormInto("green-form", data.schema, data.values);
+  $("green-attribution").innerHTML = (data.attribution || []).map((a) => `<li>${esc(a)}</li>`).join("");
+  const factors = await api("/api/green/factors");
+  $("factors-rows").innerHTML = factors.models.map((m) => {
+    const wpt = m.wh_per_output_token || {};
+    return `<tr class="factor-grid ${m.overridden ? "overridden" : ""}" data-factor="${esc(m.model)}">
+      <td title="${esc(m.basis || "")}">${esc(m.model)}${m.overridden ? ' <span class="ok">•</span>' : ""}</td>
+      <td class="muted">${esc(m.basis || "–")}</td>
+      <td><input type="number" step="any" data-wmin value="${wpt.min ?? ""}"></td>
+      <td><input type="number" step="any" data-wmean value="${wpt.mean ?? ""}"></td>
+      <td><input type="number" step="any" data-wmax value="${wpt.max ?? ""}"></td>
+      <td><button title="Reset to bundled value" data-freset>reset</button></td>
+    </tr>`;
+  }).join("");
+  document.querySelectorAll("[data-freset]").forEach((btn) => {
+    btn.onclick = () => {
+      const tr = btn.closest("tr");
+      tr.querySelector("[data-wmin]").value = "";
+      tr.querySelector("[data-wmean]").value = "";
+      tr.querySelector("[data-wmax]").value = "";
+    };
+  });
+}
+$("green-save").onclick = async () => {
+  try {
+    await api("/api/green", { method: "PUT", body: JSON.stringify({ values: readForm("green-form") }) });
+    $("green-msg").textContent = "Saved"; $("green-msg").className = "feedback ok";
+  } catch (err) { $("green-msg").textContent = err.message; $("green-msg").className = "feedback bad"; }
+};
+$("factors-save").onclick = async () => {
+  const overrides = {};
+  document.querySelectorAll("tr[data-factor]").forEach((tr) => {
+    const min = tr.querySelector("[data-wmin]").value;
+    const mean = tr.querySelector("[data-wmean]").value;
+    const max = tr.querySelector("[data-wmax]").value;
+    if (min === "" && mean === "" && max === "") {
+      overrides[tr.dataset.factor] = null;  // clear override
+    } else {
+      overrides[tr.dataset.factor] = { wh_per_output_token: { min, mean, max } };
+    }
+  });
+  try {
+    await api("/api/green/factors", { method: "PUT", body: JSON.stringify({ overrides }) });
+    $("factors-msg").textContent = "Saved"; $("factors-msg").className = "feedback ok";
+  } catch (err) { $("factors-msg").textContent = err.message; $("factors-msg").className = "feedback bad"; }
+  loadGreenSettings();
+};
+
+/* ---------------- dashboard data ---------------- */
+async function loadDashboard() {
+  const [daily, totals, green, usage] = await Promise.all([
+    api("/api/usage/daily?days=14"),
+    api("/api/usage/totals"),
+    api("/api/green/panel"),
+    api("/api/usage?limit=12"),
+  ]);
+  const days = daily.days || [];
+  const t = totals || {};
+  const gt = green.totals || {};
+  const costSum = days.reduce((acc, d) => acc + (d.cost || 0), 0);
+  const chips = [
+    { label: "Requests", value: fmt(t.requests), cls: "" },
+    { label: "Tokens", value: shortNum((t.tokens_before || 0)), sub: "before compression", cls: "blue" },
+    { label: "Tokens saved", value: fmt(t.tokens_saved), sub: "compression", cls: "green" },
+    { label: "Cost", value: `$${costSum.toFixed(4)}`, sub: "17.11.2026 window", cls: "" },
+    { label: "Energy", value: `${sig(gt.energy_kwh_mean ? gt.energy_kwh_mean * 1000 : 0)} Wh`, sub: `min ${sig(gt.energy_kwh_min ? gt.energy_kwh_min * 1000 : 0)} · max ${sig(gt.energy_kwh_max ? gt.energy_kwh_max * 1000 : 0)}`, cls: "green" },
+    { label: "Carbon", value: `${sig(gt.gwp_kgco2e_mean ? gt.gwp_kgco2e_mean * 1000 : 0)} g`, sub: "CO&#8322;e mean", cls: "green" },
+    { label: "Cache reads", value: fmt(t.cache_read_tokens), sub: "tokens", cls: "blue" },
+    { label: "Fallbacks", value: fmt(t.fallbacks), sub: "compression", cls: "" },
+  ];
+  $("chips").innerHTML = chips.map((c) =>
+    `<div class="chip ${c.cls}"><div class="label">${c.label}</div><div class="value">${c.value}</div>${c.sub ? `<div class="sub">${c.sub}</div>` : ""}</div>`).join("");
+  barChart("chart-tokens", days.map((d) => ({ label: d.day.slice(5), values: [d.input_tokens, d.output_tokens] })),
+    [{ color: "#58a6ff" }, { color: "#3fb950" }]);
+  barChart("chart-cost", days.map((d) => ({ label: d.day.slice(5), values: [d.cost || 0] })), [{ color: "#d29922" }]);
+  barChart("chart-green", days.map((d) => ({ label: d.day.slice(5), values: [Math.round((d.gwp_kgco2e_mean || 0) * 1000), Math.round((d.gwp_kgco2e_max || 0) * 1000)] })),
+    [{ color: "#3fb950" }, { color: "#1d4428" }]);
+  $("usage-rows").innerHTML = (usage.rows || []).map((r) => `<tr>
+    <td>${fmtWhen(r.ts)}</td><td>${esc(r.model)}</td><td>${esc(r.route)}</td>
+    <td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td>
+    <td class="num">${fmt(r.cache_read_tokens)}</td><td class="num">${fmt(r.tokens_saved)}</td>
+    <td class="num">${r.cost_reported ? esc(r.cost_reported) : "–"}</td>
+    <td class="num">${fmt(r.duration_ms)}</td>
+    <td class="num ${r.status < 400 ? "ok" : "bad"}">${r.status}</td></tr>`).join("");
+  $("green-models").innerHTML = (green.by_model || []).map((m) => `<tr>
+    <td>${esc(m.model)}</td><td>${esc(m.model_basis || "–")}</td>
+    <td class="num">${fmt(m.requests)}</td>
+    <td class="num">${sig(m.energy_kwh_mean != null ? m.energy_kwh_mean * 1000 : null)}</td>
+    <td class="num">${sig(m.gwp_kgco2e_mean != null ? m.gwp_kgco2e_mean * 1000 : null)}</td></tr>`).join("");
+}
+
+/* ---------------- boot ---------------- */
+loadState().then(() => {
+  loadFeatures();
+  loadDashboard();
+  setInterval(() => { if ($("view-dashboard").classList.contains("active")) loadDashboard(); }, 10000);
+});
 </script>
 </body>
 </html>

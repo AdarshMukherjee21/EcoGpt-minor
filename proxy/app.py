@@ -36,18 +36,27 @@ from .config import (
     load_settings,
     save_settings,
 )
-from .routing import ROUTE_ANTHROPIC, ROUTE_RESPONSES, VALID_ROUTES, normalize_model, route_for, upstream_base
 from .session_key import extract_session
 from .sidecar import Sidecar
 from .sidecar_client import CompressError, Outcome, SidecarClient
 from .translate_request import to_responses_request
 from .translate_response import StreamConverter, reported_cost, to_anthropic_message, usage_from_responses
-from .translate_chat import AnthropicToChat, err_to_chat, from_chat_completions, to_chat_completions
+from .translate_chat import (
+    AnthropicToChat,
+    ChatToAnthropic,
+    chat_usage_to_anthropic,
+    from_chat_completions,
+    to_anthropic_message_from_chat,
+    to_chat_completions,
+    to_chat_completions_request,
+)
 from .translate_responses_ingress import (
     AnthropicToResponses,
     from_responses_request,
     to_responses_response,
 )
+from .routing import ROUTE_ANTHROPIC, ROUTE_RESPONSES, ROUTE_CHAT, VALID_ROUTES, normalize_model, route_for, upstream_base
+from .green import GREEN_OVERRIDES_PATH
 from .usage import StreamUsage
 
 logger = logging.getLogger("token_proxy")
@@ -59,6 +68,12 @@ class SettingsUpdate(BaseModel):
     exposed_models: Optional[list[str]] = None
     route_overrides: Optional[dict[str, str]] = None
     model_overrides: Optional[dict[str, str]] = None
+    providers: Optional[list[dict[str, Any]]] = None
+    model_providers: Optional[dict[str, str]] = None
+
+
+class GreenFactorsUpdate(BaseModel):
+    overrides: dict[str, Optional[dict[str, Any]]]
 
 
 class HeadroomUpdate(BaseModel):
@@ -203,12 +218,13 @@ def create_app(
     async def upstream_unreachable(_request: Request, exc: httpx.HTTPError) -> JSONResponse:
         return error_json(502, f"Could not reach the gateway at {settings.upstream_url}: {exc}")
 
-    def base() -> str:
-        return upstream_base(settings.upstream_url)
+    def base(provider: dict[str, str] | None = None) -> str:
+        # effective_providers() already normalized the URL through upstream_base().
+        return provider["url"] if provider else upstream_base(settings.upstream_url)
 
-    def upstream_headers(request: Request, passthrough: bool) -> dict[str, str]:
+    def upstream_headers(request: Request, passthrough: bool, provider: dict[str, str] | None = None) -> dict[str, str]:
         headers = {"content-type": "application/json"}
-        key = settings.effective_key()
+        key = settings.effective_key(provider)
         if key:
             # Credential substitution: the gateway always speaks with its own
             # upstream key and never leaks or honors the client's dummy token.
@@ -507,8 +523,9 @@ def create_app(
             usage_log.mark_relayed(db_path, turn_id)
 
     async def passthrough(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
-        url = f"{base()}/v1/messages"
-        headers = upstream_headers(request, passthrough=True)
+        provider = settings.provider_for(ctx.model)
+        url = f"{base(provider)}/v1/messages"
+        headers = upstream_headers(request, passthrough=True, provider=provider)
         stream = ctx.stream
         started = time.monotonic()
         payload = json.dumps(ctx.body).encode("utf-8")
@@ -554,9 +571,10 @@ def create_app(
         return StreamingResponse(relay(), status_code=resp.status_code, media_type=media)
 
     async def via_responses(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
+        provider = settings.provider_for(ctx.model)
         upstream_body = to_responses_request(ctx.body, ctx.upstream_model)
-        url = f"{base()}/v1/responses"
-        headers = upstream_headers(request, passthrough=False)
+        url = f"{base(provider)}/v1/responses"
+        headers = upstream_headers(request, passthrough=False, provider=provider)
         stream = ctx.stream
         started = time.monotonic()
         if outcome is not None and "relay_usage" in outcome.obligations:
@@ -615,6 +633,62 @@ def create_app(
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
+    async def via_chat(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
+        """Messages -> Chat Completions upstream, CC response/SS back to Messages."""
+        provider = settings.provider_for(ctx.model)
+        upstream_body = to_chat_completions_request(ctx.body, ctx.upstream_model)
+        url = f"{base(provider)}/v1/chat/completions"
+        headers = upstream_headers(request, passthrough=False, provider=provider)
+        stream = ctx.stream
+        started = time.monotonic()
+        if outcome is not None and "relay_usage" in outcome.obligations:
+            record["relay_pending"] = True
+
+        if not stream:
+            resp = await client.post(url, json=upstream_body, headers=headers)
+            if resp.status_code >= 400:
+                observe_upstream_error(ctx, record, status=resp.status_code,
+                                       duration_ms=(time.monotonic() - started) * 1000)
+                return upstream_error(resp)
+            data = safe_json(resp)
+            message = to_anthropic_message_from_chat(data, ctx.requested_model)
+            observe_response(ctx, record, route=ROUTE_CHAT, stream=False, status=resp.status_code,
+                             usage=message.get("usage"), cost=header_cost(resp.headers) or reported_cost(data.get("usage")),
+                             duration_ms=(time.monotonic() - started) * 1000,
+                             stop_reason=message.get("stop_reason"),
+                             content=message.get("content"))
+            return JSONResponse(message)
+
+        req = client.build_request("POST", url, json=upstream_body, headers=headers)
+        resp = await client.send(req, stream=True)
+        if resp.status_code >= 400:
+            await resp.aread()
+            error = upstream_error(resp)
+            await resp.aclose()
+            observe_upstream_error(ctx, record, status=resp.status_code,
+                                   duration_ms=(time.monotonic() - started) * 1000)
+            return error
+
+        converter = ChatToAnthropic(ctx.requested_model)
+
+        async def relay():
+            try:
+                async for chunk in resp.aiter_bytes():
+                    output = converter.feed(chunk)
+                    if output:
+                        yield output
+            finally:
+                await resp.aclose()
+                stream_usage = chat_usage_to_anthropic(converter.usage_raw)
+                if not stream_usage.get("output_tokens") and not stream_usage.get("input_tokens"):
+                    stream_usage = None
+                observe_response(ctx, record, route=ROUTE_CHAT, stream=True, status=resp.status_code,
+                                 usage=stream_usage, cost=header_cost(resp.headers) or converter.cost,
+                                 duration_ms=(time.monotonic() - started) * 1000,
+                                 stop_reason=converter.stop_reason)
+
+        return StreamingResponse(relay(), media_type="text/event-stream")
+
     @app.post("/v1/messages")
     async def messages(request: Request):
         try:
@@ -650,6 +724,8 @@ def create_app(
             ctx.body["model"] = ctx.upstream_model
         if ctx.route == ROUTE_RESPONSES:
             return await via_responses(request, ctx, record, outcome)
+        if ctx.route == ROUTE_CHAT:
+            return await via_chat(request, ctx, record, outcome)
         return await passthrough(request, ctx, record, outcome)
     def build_context(request: Request, body: dict[str, Any]) -> RequestContext:
         """Identity stage: read flags from config at request time, compute route, extract session."""
@@ -681,12 +757,14 @@ def create_app(
         if blocked is not None:
             return blocked
         body["model"] = model
-        if route_for(model, settings.route_overrides) == ROUTE_RESPONSES:
+        route = route_for(model, settings.route_overrides)
+        if route in (ROUTE_RESPONSES, ROUTE_CHAT):
             return JSONResponse({"input_tokens": max(1, len(json.dumps(body)) // 4)})
+        provider = settings.provider_for(model)
         resp = await client.post(
-            f"{base()}/v1/messages/count_tokens",
+            f"{base(provider)}/v1/messages/count_tokens",
             json=body,
-            headers=upstream_headers(request, passthrough=True),
+            headers=upstream_headers(request, passthrough=True, provider=provider),
         )
         return Response(
             content=resp.content,
@@ -795,6 +873,11 @@ def create_app(
                 "exposed_models": settings.exposed_models,
                 "route_overrides": settings.route_overrides,
                 "model_overrides": settings.model_overrides,
+                "providers": [
+                    {**p, "api_key": None, "api_key_set": bool(p["api_key"] or "")}
+                    for p in settings.effective_providers()
+                ],
+                "model_providers": settings.model_providers,
             },
             "claude": claude_state(),
             "desktop": desktop_state(),
@@ -805,14 +888,62 @@ def create_app(
         new_url = None
         if update.upstream_url is not None:
             new_url = upstream_base(update.upstream_url)
+        if update.providers is not None:
+            normalized_providers = []
+            for index, provider in enumerate(update.providers[:3]):
+                url = upstream_base(str(provider.get("url") or "").strip())
+                if url:
+                    parts = urlsplit(url)
+                    if parts.scheme not in ("http", "https") or not parts.hostname:
+                        return error_json(400, "Provider URLs must start with http:// or https://",
+                                          "invalid_request_error")
+                    if parts.port == LISTEN_PORT:
+                        return error_json(400, f"A provider cannot be the proxy itself (port {LISTEN_PORT})",
+                                          "invalid_request_error")
+                name = str(provider.get("name") or "").strip() or ("primary" if index == 0 else f"provider-{index + 1}")
+                key = str(provider.get("api_key") or "").strip()
+                if not key:
+                    # empty key field = keep the stored key for this name/url pair
+                    for existing in settings.effective_providers():
+                        if existing["name"] == name and existing["url"] == url and existing["api_key"]:
+                            key = existing["api_key"]
+                            break
+                normalized_providers.append({"name": name, "url": url, "api_key": key})
+            names = [p["name"] for p in normalized_providers if p["url"]]
+            if not names:
+                return error_json(400, "At least one provider needs a URL", "invalid_request_error")
+            if len(set(names)) != len(names):
+                return error_json(400, "Provider names must be unique", "invalid_request_error")
+            if update.model_providers is not None:
+                unknown = [v for v in update.model_providers.values() if v and v not in names]
+                if unknown:
+                    return error_json(400, f"Unknown provider name: {unknown[0]}", "invalid_request_error")
+            settings.providers = normalized_providers
+            # keep legacy top-level fields in sync (they back provider[0] if config is hand-edited)
+            settings.upstream_url = next(p["url"] for p in normalized_providers if p["url"])
+            settings.api_key = normalized_providers[0]["api_key"]
+        elif update.model_providers is not None:
+            names = [p["name"] for p in settings.effective_providers()]
+            unknown = [v for v in update.model_providers.values() if v and v not in names]
+            if unknown:
+                return error_json(400, f"Unknown provider name: {unknown[0]}", "invalid_request_error")
+        if update.model_providers is not None:
+            settings.model_providers = {k: v for k, v in update.model_providers.items() if v}
+        else:
+            settings.model_providers = {k: v for k, v in settings.model_providers.items()
+                                        if v in {p["name"] for p in settings.effective_providers()}}
+        if new_url is not None and update.providers is None:
             parts = urlsplit(new_url)
             if parts.scheme not in ("http", "https") or not parts.hostname:
                 return error_json(400, "Upstream URL must start with http:// or https://", "invalid_request_error")
             if parts.port == LISTEN_PORT:
                 return error_json(400, f"Upstream cannot be the proxy itself (port {LISTEN_PORT})",
                                   "invalid_request_error")
+            settings.upstream_url = new_url
+        if update.api_key is not None and update.providers is None:
+            settings.api_key = update.api_key.strip()
         if update.route_overrides is not None and any(v not in VALID_ROUTES for v in update.route_overrides.values()):
-            return error_json(400, "Route must be 'anthropic' or 'responses'", "invalid_request_error")
+            return error_json(400, "Route must be 'anthropic', 'responses' or 'chat'", "invalid_request_error")
         if update.model_overrides is not None:
             aliases = {str(k).strip(): str(v).strip() for k, v in update.model_overrides.items()}
             if any(not k or not v for k, v in aliases.items()):
@@ -856,6 +987,46 @@ def create_app(
             "attribution": green_metrics.attribution(),
         }
 
+    @app.get("/api/green/factors")
+    async def green_factors_view():
+        factors = green_metrics.load_factors()
+        overrides = green_metrics.load_overrides()
+        models = []
+        for key, row in sorted((factors.get("models") or {}).items()):
+            models.append(
+                {
+                    "model": key,
+                    "basis": row.get("basis"),
+                    "arch": row.get("arch"),
+                    "wh_per_output_token": row.get("wh_per_output_token") or {},
+                    "overridden": key in overrides,
+                }
+            )
+        return {"models": models, "attribution": green_metrics.attribution()}
+
+    @app.put("/api/green/factors")
+    async def green_factors_update(update: GreenFactorsUpdate):
+        merged = green_metrics.load_overrides()
+        for key, value in update.overrides.items():
+            if value is None:
+                merged.pop(key, None)
+                continue
+            wpt = value.get("wh_per_output_token")
+            if not isinstance(wpt, dict):
+                return error_json(400, f"{key}: expected wh_per_output_token {{min, mean, max}}",
+                                  "invalid_request_error")
+            parsed = {}
+            for bound in ("min", "mean", "max"):
+                try:
+                    parsed[bound] = float(wpt[bound])
+                except (KeyError, TypeError, ValueError):
+                    return error_json(400, f"{key}: wh_per_output_token.{bound} must be a number",
+                                      "invalid_request_error")
+            merged[key] = {"wh_per_output_token": parsed, "basis": "user-override"}
+        GREEN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GREEN_OVERRIDES_PATH.write_text(json.dumps({"models": merged}, indent=2), encoding="utf-8")
+        return {"ok": True, "overrides": merged}
+
     @app.put("/api/green")
     async def green_update(update: HeadroomUpdate):
         current = dict(settings.green)
@@ -892,11 +1063,19 @@ def create_app(
                 "run_label": session.get("run_label"), **session.get("summary", {})}
 
     @app.get("/api/gateway/models")
-    async def gateway_models():
+    async def gateway_models(provider: str | None = None):
+        selected = settings.default_provider()
+        for candidate in settings.effective_providers():
+            if candidate["name"] == provider:
+                selected = candidate
+                break
         headers = {}
-        if settings.effective_key():
-            headers["authorization"] = f"Bearer {settings.effective_key()}"
-        resp = await client.get(f"{base()}/v1/models", headers=headers)
+        if settings.effective_key(selected):
+            headers["authorization"] = f"Bearer {settings.effective_key(selected)}"
+        try:
+            resp = await client.get(f"{base(selected)}/v1/models", headers=headers)
+        except httpx.HTTPError as exc:
+            return error_json(502, f"Could not reach the gateway at {selected['url']}: {exc}")
         if resp.status_code >= 400:
             return upstream_error(resp)
         models = []
@@ -905,9 +1084,12 @@ def create_app(
             models.append(
                 {
                     "id": model_id,
-                    "display_name": item.get("display_name", model_id),
+                    "display_name": item.get("display_name", item.get("name", model_id)),
                     "exposed": model_id in settings.exposed_models,
                     "route": route_for(model_id, settings.route_overrides),
+                    "provider": selected["name"]
+                    if model_id not in settings.model_providers
+                    else settings.model_providers[model_id],
                 }
             )
         return {"models": models}
@@ -933,7 +1115,8 @@ def create_app(
         return desktop_state()
 
     @app.post("/api/desktop/apply")
-    async def apply_desktop(update: DesktopApply):
+    async def apply_desktop(update: Optional[DesktopApply] = None):
+        update = update or DesktopApply()
         base_url = (update.base_url or settings.proxy_url()).strip().rstrip("/") or "/"
         api_key = update.api_key or (settings.effective_key() or "ecogpt-managed")
         try:
@@ -954,6 +1137,10 @@ def create_app(
     @app.get("/api/usage")
     async def usage_rows(limit: int = 50):
         return {"rows": usage_log.recent(db_path, max(1, min(limit, 500)))}
+
+    @app.get("/api/usage/daily")
+    async def usage_daily(days: int = 30):
+        return {"days": usage_log.daily(db_path, max(1, min(days, 90)))}
 
     @app.get("/api/usage/totals")
     async def usage_totals():

@@ -28,8 +28,7 @@ def _app(tmp_path, *, overrides=None, exposed=("liquid-lfm-3-1-7b",), upstream=N
     settings_path = tmp_path / "config.json"
     settings = Settings(upstream_url="http://gateway.test", exposed_models=list(exposed))
     settings.headroom = headroom_normalize({"retries": 0, "backoff_ms": 0})
-    settings.features = {"compression": False, "cost_control": False, "shunt": False,
-                         "green_metrics": True, "tracing": True, "run_label": "alias-tests"}
+    settings.features = {"compression": False, "green_metrics": True, "tracing": True, "run_label": "alias-tests"}
     settings.model_overrides = dict(overrides if overrides is not None else
                                     {ALIAS: UPSTREAM_ID})
     save_settings(settings, settings_path)

@@ -9,6 +9,7 @@ from typing import Any
 from . import features as features_settings
 from . import green as green_settings
 from . import headroom_settings
+from .routing import upstream_base
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = PROJECT_DIR / "data"
@@ -30,12 +31,48 @@ class Settings:
     exposed_models: list[str] = field(default_factory=list)
     route_overrides: dict[str, str] = field(default_factory=dict)
     model_overrides: dict[str, str] = field(default_factory=dict)
+    providers: list[dict[str, Any]] = field(default_factory=list)
+    model_providers: dict[str, str] = field(default_factory=dict)
     headroom: dict[str, Any] = field(default_factory=headroom_settings.defaults)
     features: dict[str, Any] = field(default_factory=features_settings.defaults)
     green: dict[str, Any] = field(default_factory=green_settings.defaults)
 
-    def effective_key(self) -> str:
-        return os.environ.get("TOKEN_PROXY_UPSTREAM_KEY") or self.api_key
+    def __post_init__(self) -> None:
+        self.migrate_providers()
+
+    def migrate_providers(self) -> None:
+        """Back-compat: a config with only upstream_url/api_key becomes provider[0]."""
+        if not self.providers:
+            self.providers = [{"name": "primary", "url": self.upstream_url, "api_key": self.api_key}]
+
+    def effective_providers(self) -> list[dict[str, str]]:
+        out = []
+        for provider in self.providers[:3]:
+            url = str(provider.get("url") or "").strip() or self.upstream_url
+            name = str(provider.get("name") or "").strip() or "primary"
+            out.append({"name": name, "url": upstream_base(url), "api_key": str(provider.get("api_key") or "")})
+        return out or [{"name": "primary", "url": self.upstream_url, "api_key": self.api_key}]
+
+    def provider_for(self, model: str) -> dict[str, str]:
+        providers = self.effective_providers()
+        name = self.model_providers.get(model or "")
+        for provider in providers:
+            if provider["name"] == name:
+                return provider
+        return providers[0]
+
+    def default_provider(self) -> dict[str, str]:
+        return self.effective_providers()[0]
+
+    def effective_key(self, provider: dict[str, str] | None = None) -> str:
+        # Per-provider key wins; the legacy TOKEN_PROXY_UPSTREAM_KEY env still
+        # overrides everything (ablation harness expectation).
+        env = os.environ.get("TOKEN_PROXY_UPSTREAM_KEY")
+        if env:
+            return env
+        if provider is not None:
+            return provider.get("api_key") or ""
+        return self.api_key
 
     def proxy_url(self) -> str:
         return f"http://{LISTEN_HOST}:{LISTEN_PORT}"
@@ -54,6 +91,20 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         settings.route_overrides = dict(raw.get("route_overrides", {}))
         overrides = raw.get("model_overrides") or {}
         settings.model_overrides = {str(k): str(v) for k, v in dict(overrides).items()}
+        stored_providers = raw.get("providers")
+        if isinstance(stored_providers, list):
+            settings.providers = [
+                {
+                    "name": str(p.get("name") or "").strip() or f"provider-{index + 1}",
+                    "url": str(p.get("url") or "").strip(),
+                    "api_key": str(p.get("api_key") or ""),
+                }
+                for index, p in enumerate(stored_providers[:3])
+                if isinstance(p, dict)
+            ]
+        stored_model_providers = raw.get("model_providers")
+        if isinstance(stored_model_providers, dict):
+            settings.model_providers = {str(k): str(v) for k, v in stored_model_providers.items()}
         stored = {
             key: value for key, value in dict(raw.get("headroom", {})).items()
             if key in {e["key"] for e in headroom_settings.SCHEMA}

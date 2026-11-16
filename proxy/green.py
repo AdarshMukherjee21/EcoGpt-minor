@@ -39,6 +39,7 @@ from typing import Any
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 GREEN_FACTORS_PATH = PROJECT_DIR / "data" / "green_factors.json"
+GREEN_OVERRIDES_PATH = PROJECT_DIR / "data" / "green_overrides.json"
 
 # Fallback used only when the factors file is missing or unreadable; matches it.
 _FALLBACK = {
@@ -94,23 +95,58 @@ _BOUNDS = ("min", "mean", "max")
 
 _factors_cache: dict[str, Any] = {}
 _factors_mtime: float | None = None
+_overrides_mtime: float | None = None
 
 
-def load_factors(path: Path | None = None) -> dict[str, Any]:
-    """The factor table, cached; reloads when the file's mtime changes. Fails open."""
-    global _factors_cache, _factors_mtime
+def load_overrides(path: Path | None = None) -> dict[str, Any]:
+    """Per-model factor overrides (user-editable from the dashboard); fails open."""
+    path = Path(path or GREEN_OVERRIDES_PATH)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    models = data.get("models") if isinstance(data, dict) else None
+    return models if isinstance(models, dict) else {}
+
+
+def load_factors(path: Path | None = None, overrides_path: Path | None = None) -> dict[str, Any]:
+    """The factor table with overrides merged in; cached, reloads on mtime change. Fails open."""
+    global _factors_cache, _factors_mtime, _overrides_mtime
     path = Path(path or GREEN_FACTORS_PATH)
+    overrides_path = Path(overrides_path or GREEN_OVERRIDES_PATH)
     try:
         mtime = path.stat().st_mtime
-        if _factors_cache and mtime == _factors_mtime:
-            return _factors_cache
+    except OSError:
+        return _FALLBACK
+    try:
+        overrides_mtime = overrides_path.stat().st_mtime
+    except OSError:
+        overrides_mtime = None
+    if _factors_cache and mtime == _factors_mtime and overrides_mtime == _overrides_mtime:
+        return _factors_cache
+    try:
         data = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(data, dict):
             raise ValueError("factors file must be a JSON object")
     except (OSError, ValueError):
-        return _FALLBACK
+        _factors_cache = _FALLBACK
+        _factors_mtime = mtime
+        _overrides_mtime = overrides_mtime
+        return _factors_cache
+    overrides = load_overrides(overrides_path)
+    if overrides:
+        models = data.get("models") if isinstance(data.get("models"), dict) else {}
+        for key, override in overrides.items():
+            base_row = models.get(key)
+            if isinstance(override, dict) and isinstance(base_row, dict):
+                merged = dict(base_row)
+                merged.update(override)
+                merged["_overridden"] = True
+                models[key] = merged
+        data["models"] = models
     _factors_cache = data
     _factors_mtime = mtime
+    _overrides_mtime = overrides_mtime
     return data
 
 

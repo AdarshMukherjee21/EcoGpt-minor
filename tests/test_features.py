@@ -13,8 +13,6 @@ from proxy.headroom_settings import normalize as headroom_normalize
 def test_defaults_match_the_work_order():
     assert fs.defaults() == {
         "compression": True,
-        "cost_control": False,
-        "shunt": False,
         "green_metrics": False,
         "tracing": False,
         "run_label": "",

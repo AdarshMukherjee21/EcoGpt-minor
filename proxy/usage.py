@@ -155,6 +155,50 @@ def totals(path: Path) -> dict[str, Any]:
     return dict(row)
 
 
+def parse_cost(cost: str | None) -> float | None:
+    """`header_cost` stores 'name: value' strings; extract the numeric part."""
+    if not cost:
+        return None
+    text = str(cost).split(": ")[-1].strip().lstrip("$")
+    try:
+        return float(text)
+    except ValueError:
+        return None
+
+
+def daily(path: Path, days: int = 30) -> list[dict[str, Any]]:
+    """Per-UTC-day rollup for the dashboard charts: tokens, cost, green."""
+    with closing(sqlite3.connect(path)) as db:
+        db.row_factory = sqlite3.Row
+        rows = db.execute(
+            "select date(ts, 'unixepoch') as day, count(*) as requests, "
+            "coalesce(sum(input_tokens), 0) as input_tokens, "
+            "coalesce(sum(output_tokens), 0) as output_tokens, "
+            "coalesce(sum(cache_read_tokens), 0) as cache_read_tokens, "
+            "coalesce(sum(cache_write_tokens), 0) as cache_write_tokens, "
+            "coalesce(sum(tokens_saved), 0) as tokens_saved, "
+            "coalesce(sum(case when compressed then 1 else 0 end), 0) as compressed, "
+            "coalesce(sum(energy_kwh_mean), 0.0) as energy_kwh_mean, "
+            "coalesce(sum(energy_kwh_min), 0.0) as energy_kwh_min, "
+            "coalesce(sum(energy_kwh_max), 0.0) as energy_kwh_max, "
+            "coalesce(sum(gwp_kgco2e_mean), 0.0) as gwp_kgco2e_mean, "
+            "coalesce(sum(gwp_kgco2e_min), 0.0) as gwp_kgco2e_min, "
+            "coalesce(sum(gwp_kgco2e_max), 0.0) as gwp_kgco2e_max "
+            "from usage group by day order by day asc"
+        ).fetchall()
+    out = []
+    for row in rows:
+        item = dict(row)
+        # cost_reported is not aggregated in SQL (text); re-query just costs per day.
+        with closing(sqlite3.connect(path)) as db:
+            raw = db.execute(
+                "select cost_reported from usage where date(ts, 'unixepoch') = ?", (item["day"],)
+            ).fetchall()
+        item["cost"] = round(sum(c for r in raw if (c := parse_cost(r[0])) is not None), 6)
+        out.append(item)
+    return out[-days:]
+
+
 _GREEN_COLUMNS = (
     "coalesce(sum(energy_kwh_mean), 0.0) as energy_kwh_mean, "
     "coalesce(sum(energy_kwh_min), 0.0) as energy_kwh_min, "

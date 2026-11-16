@@ -311,6 +311,251 @@ class AnthropicToChat:
         return b""
 
 
+def chat_usage_to_anthropic(usage: dict[str, Any] | None) -> dict[str, Any]:
+    usage = usage or {}
+    details = usage.get("prompt_tokens_details") or {}
+    cached = details.get("cached_tokens") or 0
+    return {
+        "input_tokens": max((usage.get("prompt_tokens") or 0) - cached, 0),
+        "output_tokens": usage.get("completion_tokens") or 0,
+        "cache_read_input_tokens": cached,
+        "cache_creation_input_tokens": usage.get("cache_creation_tokens") or 0,
+    }
+
+
+def _image_url(block: dict[str, Any]) -> str:
+    source = block.get("source") or {}
+    if source.get("type") == "base64":
+        return f"data:{source.get('media_type', 'image/png')};base64,{source.get('data', '')}"
+    if source.get("type") == "url":
+        return source.get("url", "")
+    return ""
+
+
+def _parse_arguments(raw: Any) -> dict[str, Any]:
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def to_chat_completions_request(body: dict[str, Any], model: str) -> dict[str, Any]:
+    """Anthropic Messages request -> Chat Completions request."""
+    messages: list[dict[str, Any]] = []
+    system_text = body.get("system")
+    if system_text:
+        messages.append({"role": "system", "content": _text_of(system_text)})
+    for message in body.get("messages", []):
+        role = message.get("role")
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else ([{"type": "text", "text": content}] if content else [])
+        if role == "assistant":
+            parts = [b.get("text", "") for b in blocks if b.get("type") == "text"]
+            tool_calls = [
+                {
+                    "id": b.get("id") or f"call_{i}",
+                    "type": "function",
+                    "function": {"name": b.get("name", ""), "arguments": json.dumps(b.get("input", {}))},
+                }
+                for i, b in enumerate(blocks) if b.get("type") == "tool_use"
+            ]
+            entry: dict[str, Any] = {"role": "assistant", "content": "".join(parts) or None}
+            if tool_calls:
+                entry["tool_calls"] = tool_calls
+            messages.append(entry)
+            continue
+        parts: list[dict[str, Any]] = []
+        for block in blocks:
+            kind = block.get("type")
+            if kind == "text":
+                parts.append({"type": "text", "text": block.get("text", "")})
+            elif kind == "image":
+                url = _image_url(block)
+                if url:
+                    parts.append({"type": "image_url", "image_url": {"url": url}})
+            elif kind == "tool_result":
+                tool_content = block.get("content")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": block.get("tool_use_id") or "",
+                    "content": tool_content if isinstance(tool_content, str) else _text_of(tool_content),
+                })
+        if parts:
+            messages.append({"role": role, "content": parts})
+    request: dict[str, Any] = {"model": model, "messages": messages, "stream": bool(body.get("stream"))}
+    if body.get("max_tokens"):
+        request["max_tokens"] = body["max_tokens"]
+    tools = [
+        {"type": "function", "function": {"name": tool["name"], "description": tool.get("description", ""),
+                                          "parameters": tool["input_schema"]}}
+        for tool in body.get("tools") or [] if "input_schema" in tool
+    ]
+    if tools:
+        request["tools"] = tools
+        choice = body.get("tool_choice") or {}
+        kind = choice.get("type")
+        if kind == "tool":
+            request["tool_choice"] = {"type": "function", "function": {"name": choice.get("name", "")}}
+        elif kind in ("auto", "any", "none"):
+            request["tool_choice"] = {"auto": "auto", "any": "required", "none": "none"}.get(kind)
+        if choice.get("disable_parallel_tool_use"):
+            request["parallel_tool_calls"] = False
+    if body.get("stop_sequences"):
+        request["stop"] = body["stop_sequences"]
+    if body.get("temperature") is not None:
+        request["temperature"] = body["temperature"]
+    if body.get("top_p") is not None:
+        request["top_p"] = body["top_p"]
+    if request.pop("stream"):
+        request["stream"] = True
+        request["stream_options"] = {"include_usage": True}
+    return request
+
+
+_CC_STOP_REASONS = {
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+    "stop": "end_turn",
+    "content_filter": "end_turn",
+}
+
+
+def to_anthropic_message_from_chat(data: dict[str, Any], requested_model: str) -> dict[str, Any]:
+    """Chat Completions response -> Anthropic message."""
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    content: list[dict[str, Any]] = []
+    text = message.get("content")
+    if isinstance(text, str) and text:
+        content.append({"type": "text", "text": text})
+    elif isinstance(text, list):
+        content += [{"type": "text", "text": p.get("text", "")} for p in text
+                    if isinstance(p, dict) and p.get("type") == "text"]
+    for call in message.get("tool_calls") or []:
+        function = call.get("function") or {}
+        content.append(
+            {
+                "type": "tool_use",
+                "id": call.get("id") or f"call_{len(content)}",
+                "name": function.get("name", ""),
+                "input": _parse_arguments(function.get("arguments")),
+            }
+        )
+    finish = choice.get("finish_reason")
+    return {
+        "id": "msg_" + str(data.get("id", "proxy")),
+        "type": "message",
+        "role": "assistant",
+        "model": requested_model,
+        "content": content,
+        "stop_reason": _CC_STOP_REASONS.get(finish, "end_turn"),
+        "stop_sequence": None,
+        "usage": chat_usage_to_anthropic(data.get("usage")),
+    }
+
+
+class ChatToAnthropic:
+    """Converts a Chat Completions SSE byte stream into Anthropic Messages SSE bytes."""
+
+    def __init__(self, requested_model: str) -> None:
+        self.model = requested_model
+        self.parser = SseParser()
+        self.message_id = "msg_proxy"
+        self.started = False
+        self.next_index = 0
+        self.open_index: int | None = None
+        self.open_kind: str | None = None
+        self.tool_indexes: dict[int, int] = {}
+        self.usage_raw: dict[str, Any] = {}
+        self.stop_reason: str | None = None
+        self.cost: str | None = None
+
+    def feed(self, chunk: bytes | str) -> bytes:
+        out = b""
+        for event in self.parser.feed(chunk):
+            out += self._event(event)
+        return out
+
+    def _emit(self, name: str, data: dict[str, Any]) -> bytes:
+        return f"event: {name}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+
+    def _start(self) -> bytes:
+        if self.started:
+            return b""
+        self.started = True
+        return self._emit(
+            "message_start",
+            {"type": "message_start", "message": {"id": self.message_id, "type": "message", "role": "assistant",
+                                                  "model": self.model, "content": [], "stop_reason": None,
+                                                  "stop_sequence": None,
+                                                  "usage": {"input_tokens": 0, "output_tokens": 0}}},
+        )
+
+    def _open(self, kind: str, block: dict[str, Any]) -> bytes:
+        self.open_index = self.next_index
+        self.next_index += 1
+        self.open_kind = kind
+        return self._emit("content_block_start",
+                          {"type": "content_block_start", "index": self.open_index, "content_block": block})
+
+    def _close(self) -> bytes:
+        if self.open_index is None:
+            return b""
+        out = self._emit("content_block_stop", {"type": "content_block_stop", "index": self.open_index})
+        self.open_index = None
+        self.open_kind = None
+        return out
+
+    def _event(self, chunk: dict[str, Any]) -> bytes:
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            self.usage_raw = usage
+            cost = usage.get("cost")
+            if cost is not None:
+                self.cost = str(cost)
+        choices = chunk.get("choices") or []
+        delta = (choices[0].get("delta") or {}) if choices else {}
+        finish = choices[0].get("finish_reason") if choices else None
+        out = b""
+        if not self.started:
+            out += self._start()
+        if delta.get("content"):
+            if self.open_kind != "text":
+                out += self._close()
+                out += self._open("text", {"type": "text", "text": ""})
+            out += self._emit("content_block_delta",
+                              {"type": "content_block_delta", "index": self.open_index,
+                               "delta": {"type": "text_delta", "text": delta["content"]}})
+        for call in delta.get("tool_calls") or []:
+            index = call.get("index", 0)
+            function = call.get("function") or {}
+            if call.get("id") or function.get("name"):
+                out += self._close()
+                self.tool_indexes[index] = self.next_index
+                out += self._open("tool", {"type": "tool_use", "id": call.get("id") or f"call_{index}",
+                                           "name": function.get("name", ""), "input": {}})
+            arguments = function.get("arguments")
+            if arguments and index in self.tool_indexes:
+                out += self._emit("content_block_delta",
+                                  {"type": "content_block_delta", "index": self.tool_indexes[index],
+                                   "delta": {"type": "input_json_delta", "partial_json": arguments}})
+        if finish:
+            if finish == "tool_calls":
+                self.stop_reason = "tool_use"
+                out += self._close()
+            else:
+                self.stop_reason = _CC_STOP_REASONS.get(finish, "end_turn")
+        if finish and not any(c.get("finish_reason") for c in choices[1:]):
+            out += self._emit("message_delta",
+                              {"type": "message_delta",
+                               "delta": {"stop_reason": self.stop_reason, "stop_sequence": None},
+                               "usage": chat_usage_to_anthropic(self.usage_raw)})
+            out += self._emit("message_stop", {"type": "message_stop"})
+        return out
+
+
+
 def err_to_chat(status: int, payload: dict[str, Any]) -> dict[str, Any]:
     """Anthropic-shaped error payload -> Chat Completions error payload."""
     error = payload.get("error") or {}
