@@ -306,7 +306,11 @@ def test_factors_endpoints_round_trip_params_and_wpt(tmp_path, monkeypatch):
     override_path = tmp_path / "overrides.json"
     override_path.write_text(json.dumps({"models": {}}), encoding="utf-8")
     import proxy.app as app_module
+    # The factors endpoints merge through BOTH app's imported constant and
+    # green.load_overrides() (its own module global); each must be redirected,
+    # otherwise the user's real data/green_overrides.json leaks into the merge.
     monkeypatch.setattr(app_module, "GREEN_OVERRIDES_PATH", override_path)
+    monkeypatch.setattr(green, "GREEN_OVERRIDES_PATH", override_path)
     app = _app(tmp_path, feature_values={"green_metrics": False})
     with TestClient(app) as client:
         view = client.get("/api/green/factors").json()
