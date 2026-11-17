@@ -243,7 +243,7 @@ def test_lifecycle_start_stop_with_mocked_spawn(monkeypatch: pytest.MonkeyPatch)
 
 
 def _harness_cookie(cfg: ChatUIConfig) -> str:
-    return chat_ui.harness_cookie_name(cfg.upstream_origin)
+    return chat_ui.harness_cookie_name(cfg)
 
 
 def _session_cookie_header(cfg: ChatUIConfig) -> str:
@@ -252,11 +252,15 @@ def _session_cookie_header(cfg: ChatUIConfig) -> str:
 
 
 def _mock_harness(valid_token: str, exchange_up: bool = True):
-    """Mock upstream that behaves like the duck-typed harness webserver:
+    """Mock upstream that behaves like the duck-typed harness webserver.
 
-    - GET /?token=<valid> -> 303 + Set-Cookie (token exchange), else 401
-    - GET <other>         -> 200 for a VALID session cookie, raw 401 without
+    Mirrors the vendored contract verified live:
+    - GET /?token=<valid> with Host = public authority -> 303 + Set-Cookie
+      signed for that authority; any other Host or token -> 401
+    - GET <other>          -> 200 for a VALID session cookie, raw 401 without
                              (the real harness verifies the cookie's HMAC)
+    - <other>+Origin       -> authenticated but 403 when Origin differs from
+                             the Host fence authority (public origin required)
     """
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -265,12 +269,16 @@ def _mock_harness(valid_token: str, exchange_up: bool = True):
         session_present = expected in cookies
         query = request.url.params.get("token") if request.url.path == "/" else None
         if exchange_up and query is not None:
-            if query == valid_token:
+            if query == valid_token and request.headers["host"] == "127.0.0.1:18090":
                 return httpx.Response(
                     303, headers={"location": "./", "set-cookie": _session_cookie_header(ChatUIConfig())})
             return httpx.Response(401, text="dsh web authentication required")
         if session_present:
-            return httpx.Response(200, json={"ok": True, "path": request.url.path})
+            origin = request.headers.get("origin")
+            if origin is not None and origin != "http://127.0.0.1:18090":
+                return httpx.Response(403)  # trust fence: cross-origin refused
+            return httpx.Response(200, json={"ok": True, "path": request.url.path,
+                                             "host": request.headers["host"]})
         return httpx.Response(401, text="dsh web authentication required")
 
     return handler
@@ -287,8 +295,8 @@ def test_harness_cookie_name_matches_vendor_contract() -> None:
     import hashlib as hs
 
     expected = "dsh-auth-" + b64.urlsafe_b64encode(
-        hs.sha256(b"127.0.0.1:3180").digest()).rstrip(b"=").decode()
-    assert chat_ui.harness_cookie_name("http://127.0.0.1:3180") == expected
+        hs.sha256(b"127.0.0.1:18090").digest()).rstrip(b"=").decode()
+    assert chat_ui.harness_cookie_name(ChatUIConfig()) == expected
 
 
 def test_first_cold_load_exchanges_token_mints_cookie_then_works() -> None:
@@ -296,8 +304,8 @@ def test_first_cold_load_exchanges_token_mints_cookie_then_works() -> None:
 
     Before: a cookieless (or dashboard-cookie-only) visitor got the harness's
     raw 401 relayed through. Now: the proxy exchanges the launch token
-    server-side, relays the minted session cookie, and the next hit serves
-    the SPA index.
+    server-side (with Host = the PUBLIC authority), relays the minted session
+    cookie, and the next hit serves the SPA index.
     """
     cfg = ChatUIConfig()
     sidecar = ChatUISidecar(cfg)
@@ -313,10 +321,66 @@ def test_first_cold_load_exchanges_token_mints_cookie_then_works() -> None:
         assert first.headers["location"] == "/chat/"
         assert _harness_cookie(cfg) in first.headers["set-cookie"]
 
-        # Follow-up load (cookie now set): straight through to the SPA index.
+        # Follow-up load (cookie now set): straight through to the SPA index,
+        # with the browser's public Host forwarded to the upstream.
         second = client.get("/chat", follow_redirects=False)
         assert second.status_code == 200
         assert second.json()["path"] == "/"
+        assert second.json()["host"] == "testserver"  # public Host forwarded verbatim
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_interstitial_button_targets_entry_route_not_the_gate() -> None:
+    """No dead loop: the button must hit /chat/entry (forces the exchange),
+    never a path that bounces back to the same interstitial."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=stale"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("other-token"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        response = client.get("/chat", follow_redirects=False)
+        assert response.status_code == 401
+        assert f'href="{cfg.chat_prefix}/entry"' in response.text
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_entry_route_forces_exchange_and_returns_to_chat() -> None:
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=tok123"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("tok123"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        response = client.get("/chat/entry", follow_redirects=False)
+        assert response.status_code == 303
+        assert response.headers["location"] == "/chat/"
+        assert _harness_cookie(cfg) in response.headers["set-cookie"]
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_entry_route_without_token_renders_helpful_restart_page() -> None:
+    """Token never harvested: a helpful message page (per docs/chat-ui.md),
+    with no redirect at all — clicking can never loop."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = None
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("t"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        response = client.get("/chat/entry", follow_redirects=False)
+        assert response.status_code == 503
+        assert "text/html" in response.headers["content-type"]
+        assert "python.exe -m proxy" in response.text  # restart instruction
     finally:
         chat_ui.httpx.AsyncClient = original
 

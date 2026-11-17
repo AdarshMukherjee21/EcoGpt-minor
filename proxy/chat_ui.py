@@ -63,7 +63,20 @@ CHAT_PREFIX = "/chat"
 # dsh prints its tokenized entry URL on its stdout; this is what the browser
 # is redirected to on first visit. Token exchange then sets the signed
 # session cookie (httpOnly; the token is one-time per boot).
+#
+# Harvest hardening: through a piped (non-TTY) stdout the npm/npx wrapper on
+# Windows interleaves ANSI escape sequences into the output (OSC title sets
+# like `\x1b]0;C:\\WINDOWS\\system32\\cmd.exe \x1b\\` can land mid-line, even
+# between the banner text and the URL), so escape sequences are stripped from
+# each line BEFORE the URL regex runs. The token itself cannot be pinned: the
+# CLI exposes no token flag and the plugin derives it per process from
+# randomBytes (browser-auth.ts processLaunchToken), so stdout scraping — with
+# the success/failure logs below — is the only bootstrap source.
 _ENTRY_URL_RE = re.compile(r"(https?://\S*token=[A-Za-z0-9_-]+)")
+
+# ANSI/OSC escape-sequence stripper (CSI, OSC with BEL or ST terminator, and
+# two-byte remains); applied per line before the entry-URL regex.
+_ANSI_RE = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-\\])")
 
 # Session-cookie mechanics of the harness's authentication-token plugin
 # (vendor/dsh-harness packages/host/authentication-token/src/browser-auth.ts):
@@ -152,6 +165,8 @@ class ChatUISidecar:
             env=env,
         )
         self._reader = asyncio.create_task(self._read_output(), name="chat-ui-output-reader")
+        self._harvest_watch = asyncio.create_task(
+            self._log_harvest_failure_once(), name="chat-ui-harvest-watch")
 
     async def _read_output(self) -> None:
         """Consume sidecar stdout, harvesting the tokenized entry URL."""
@@ -160,12 +175,21 @@ class ChatUISidecar:
             line = raw.decode("utf-8", errors="replace").rstrip()
             if not line:
                 continue
+            line = _ANSI_RE.sub("", line)
             log.debug("chat-ui: %s", line)
             if self.entry_url is None:
                 match = _ENTRY_URL_RE.search(line)
                 if match:
                     self.entry_url = match.group(1)
                     log.info("chat-UI entry URL discovered: %s", self.entry_url)
+
+    async def _log_harvest_failure_once(self) -> None:
+        """After the readiness window, say so when the token never arrived."""
+        await asyncio.sleep(self.cfg.ready_timeout_s)
+        if self.entry_url is None and self._proc is not None and self._proc.returncode is None:
+            log.info(
+                "chat-UI: no entry URL with token= found in sidecar output; "
+                "first-load sign-in unavailable")
 
     async def wait_ready(self, timeout: float | None = None) -> bool:
         """Wait until the sidecar answers ANY HTTP response (401/303 count)."""
@@ -187,6 +211,8 @@ class ChatUISidecar:
         """Terminate the sidecar (and its process tree on Windows)."""
         if self._reader:
             self._reader.cancel()
+        if self._harvest_watch:
+            self._harvest_watch.cancel()
         if self._proc is not None and self._proc.returncode is None:
             self._proc.terminate()
             try:
@@ -233,11 +259,26 @@ def create_chat_router(
             if automatic is not None:
                 return automatic
             if sidecar.entry_url.startswith(cfg.public_origin):
-                return _login_interstitial(cfg, cfg.chat_prefix + "/")
+                return _login_interstitial(cfg)
             # Entry URL points at some other origin (dev spike default): the
             # legacy handoff still beats a raw 401.
             return RedirectResponse(sidecar.entry_url, status_code=307)
         return await _proxy_request(request, path="")
+
+    # Dedicated login route: ALWAYS forces the token exchange and returns to
+    # the chat index, never back into the gate the button is escaping from.
+    # It is the interstitial button's target, so a stale/absent token here
+    # renders the helpful restart message below instead of redirecting.
+    @router.get(cfg.chat_prefix + "/entry")
+    async def chat_entry(request: Request) -> Response:
+        token = _launch_token(sidecar.entry_url)
+        if sidecar.entry_url and token is not None:
+            automatic = await _auto_exchange(cfg, sidecar, return_to=cfg.chat_prefix + "/")
+            if automatic is not None:
+                return automatic
+            return _entry_unavailable(cfg, "the harness rejected the launch-token exchange; "
+                                           "the token is stale or the sidecar was restarted")
+        return _entry_unavailable(cfg, "the sidecar has not published its tokenized entry URL yet")
 
     @router.websocket(cfg.chat_prefix + "/api/remote.mux")
     async def remote_mux(websocket: WebSocket) -> None:
@@ -260,6 +301,13 @@ def create_chat_router(
 
     async def _proxy_request(request: Request, path: str) -> Response:
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
+        # Forward the browser's public Host: the harness validates the session
+        # cookie's audience against the literal on-the-wire Host, and the
+        # client-connection trust fence compares an attached browser Origin
+        # against it — both describe the public origin, so a rewritten
+        # upstream Host would 403 every SPA request with an Origin header
+        # (verified live against the vendored harness).
+        headers["host"] = request.headers["host"]
         client = httpx.AsyncClient(base_url=cfg.upstream_origin, timeout=httpx.Timeout(90.0))
         body = await request.body() if request.method not in ("GET", "HEAD") else None
         upstream_request = client.build_request(request.method, "/" + path, headers=headers, content=body,
@@ -296,7 +344,7 @@ def create_chat_router(
                 automatic = await _auto_exchange(cfg, sidecar, return_to=return_to)
                 if automatic is not None:
                     return automatic
-            return _login_interstitial(cfg, return_to)
+            return _login_interstitial(cfg)
         return Response(data, status_code=upstream_response.status_code,
                         headers={k: v for k, v in upstream_response.headers.items()
                                  if k.lower() not in _HOP_HEADERS | {"content-length"}})  # Response() recomputes length
@@ -304,17 +352,31 @@ def create_chat_router(
     return router
 
 
-def harness_cookie_name(upstream_origin: str) -> str:
-    """The harness session-cookie name for an upstream origin.
+def public_authority(cfg: ChatUIConfig) -> str:
+    """The authority requests must carry as `Host` when they reach the harness.
+
+    The vendored authentication-token plugin validates every request against
+    the literal Host header on the wire (browser-auth.ts requestAudience);
+    `--public-url` advertises a URL only and configures no authentication, and
+    the client-connection trust fence compares an attached browser Origin
+    against that same Host. The daemon therefore forwards the browser's public
+    Host (127.0.0.1:18090) on every proxied request — and mints the session
+    cookie under that same public authority in the exchange — while
+    `--trusted-host` covers the fence's non-loopback allowances.
+    """
+    return urlsplit(cfg.public_origin).netloc
+
+
+def harness_cookie_name(cfg: ChatUIConfig) -> str:
+    """The harness session-cookie name expected on proxied requests.
 
     Mirrors the authentication-token plugin's cookieName(): a host-authority
     SHA-256 digest, base64url (unpadded) after the fixed prefix. The authority
-    is the Host the harness itself sees — always the proxy's private loopback
-    upstream (e.g. ``127.0.0.1:3180``), and cookie lookup upstream therefore
-    matches this name regardless of which public origin the browser used.
+    is the one the harness sees on the wire — the PUBLIC origin's netloc,
+    because the proxy forwards the browser's Host header (see
+    public_authority()) — so this name must match the minted side.
     """
-    authority = urlsplit(upstream_origin).netloc
-    digest = hashlib.sha256(authority.encode("utf-8")).digest()
+    digest = hashlib.sha256(public_authority(cfg).encode("utf-8")).digest()
     return DSH_COOKIE_PREFIX + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 
 
@@ -334,7 +396,7 @@ def _has_harness_session(request: Request, cfg: ChatUIConfig) -> bool:
     to route cold first-loads to the token exchange while passing real
     sessions straight through — the harness re-verifies every request anyway.
     """
-    value = request.cookies.get(harness_cookie_name(cfg.upstream_origin))
+    value = request.cookies.get(harness_cookie_name(cfg))
     return value is not None and value.startswith(("v1.", "v2."))
 
 
@@ -352,12 +414,16 @@ async def _exchange_session_cookie(cfg: ChatUIConfig, launch_token: str) -> str 
                                  timeout=httpx.Timeout(10.0),
                                  follow_redirects=False) as client:
         try:
-            response = await client.get("/", params={DSH_TOKEN_QUERY: launch_token})
+            # Host carries the PUBLIC authority so the minted cookie's signed
+            # audience (and name) matches the proxied request stream, which
+            # forwards the same public Host (see public_authority()).
+            response = await client.get("/", params={DSH_TOKEN_QUERY: launch_token},
+                                        headers={"host": public_authority(cfg)})
         except httpx.HTTPError:
             return None
     if response.status_code != 303:
         return None
-    wanted = harness_cookie_name(cfg.upstream_origin) + "="
+    wanted = harness_cookie_name(cfg) + "="
     for cookie in response.headers.get_list("set-cookie"):
         if cookie.startswith(wanted):
             return cookie
@@ -385,13 +451,13 @@ async def _auto_exchange(cfg: ChatUIConfig, sidecar: ChatUISidecar,
                             headers={"set-cookie": cookie, "cache-control": "no-store"})
 
 
-def _login_interstitial(cfg: ChatUIConfig, retry_path: str) -> Response:
+def _login_interstitial(cfg: ChatUIConfig) -> Response:
     """The one-click login page shown instead of the harness's raw 401.
 
     Styled like the rest of the ecoGPT UI (dark/neutral dashboard palette);
-    the button re-enters the chat router, which retries the token exchange —
-    so it doubles as a "still booting" page for the window before the sidecar
-    publishes its entry URL.
+    the button targets the dedicated /chat/entry route, which always forces
+    the token exchange with a return to the chat index — never back into a
+    gate that bounces to this same page.
     """
     html = f"""<!doctype html>
 <html lang="en">
@@ -417,12 +483,55 @@ def _login_interstitial(cfg: ChatUIConfig, retry_path: str) -> Response:
     <div class="leaf">&#127807;</div>
     <h1>ecoGPT chat</h1>
     <p>Finish signing in to the local chat session. Nothing leaves this machine.</p>
-    <a class="button" href="{retry_path}">Continue as {cfg.admin_name}</a>
+    <a class="button" href="{cfg.chat_prefix}/entry">Continue as {cfg.admin_name}</a>
   </div>
 </body>
 </html>
 """
     return HTMLResponse(html, status_code=401, headers={"cache-control": "no-store"})
+
+
+def _entry_unavailable(cfg: ChatUIConfig, reason: str) -> Response:
+    """Helpful page for a login exchange that cannot complete right now.
+
+    Matches the `_login_interstitial` styling; per docs/chat-ui.md, a stale or
+    never-harvested entry URL is fixed by restarting the daemon (which boots a
+    fresh sidecar and prints a fresh token). No redirects: the retry button
+    re-enters /chat/entry only if the user clicks it.
+    """
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ecoGPT chat — sign-in unavailable</title>
+<style>
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center;
+          background: #0b0d10; color: #f1f5f9; font: 15px/1.6 system-ui, sans-serif; }}
+  .card {{ width: min(30rem, 90vw); background: #12151c; border: 1px solid #1d222d;
+           border-radius: 14px; padding: 2rem 2.25rem; text-align: center; }}
+  h1 {{ font-size: 1.15rem; margin: 0.2rem 0 0.4rem; }}
+  p {{ color: #94a3b8; margin: 0 0 1rem; }}
+  code {{ background: #0e1116; border: 1px solid #1d222d; border-radius: 6px;
+          padding: 0.15rem 0.5rem; color: #3cffd0; font-size: 0.85rem; }}
+  .leaf {{ font-size: 1.5rem; color: #3cffd0; }}
+  a.button {{ display: inline-block; background: #06120e; color: #3cffd0;
+              border: 1px solid #1d4428; padding: 0.55rem 1.4rem; border-radius: 999px;
+              text-decoration: none; font-weight: 600; }}
+  a.button:hover {{ background: #1d4428; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="leaf">&#127807;</div>
+    <h1>Sign-in unavailable right now</h1>
+    <p>{reason}.</p>
+    <p>Restart the daemon to boot a fresh chat sidecar:<br><code>./.venv/Scripts/python.exe -m proxy</code><br>(docs/chat-ui.md)</p>
+    <a class="button" href="{cfg.chat_prefix}/entry">Try again</a>
+  </div>
+</body>
+</html>
+"""
+    return HTMLResponse(html, status_code=503, headers={"cache-control": "no-store"})
 
 
 def _default_ws_connect(url: str) -> Coroutine[Any, Any, Any]:
