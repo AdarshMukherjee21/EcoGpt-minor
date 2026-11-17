@@ -2010,8 +2010,12 @@ def create_app(
         merged_tiers = list(current_tiers)
         problems: list[str] = []
         if update.values is not None:
-            merged_values.update(update.values)  # never accepts api_key: restored below
-            merged_values["api_key"] = current_values.get("api_key") or ""
+            merged_values.update(update.values)
+            # The stored key is never echoed to the dashboard (masked as
+            # api_key=None + api_key_set), so an empty/absent submission here
+            # means "keep the stored key"; a non-empty one replaces it.
+            submitted_key = update.values.get("api_key")
+            merged_values["api_key"] = (submitted_key or current_values.get("api_key") or "")
             try:
                 merged_values = router_settings.normalize(merged_values)
             except ValueError as exc:
