@@ -1189,9 +1189,23 @@ def create_app(
         update = update or DesktopApply()
         base_url = (update.base_url or settings.proxy_url()).strip().rstrip("/") or "/"
         api_key = update.api_key or (settings.effective_key() or "ecogpt-managed")
+        # Claude Desktop only accepts Anthropic-shaped model names and sends
+        # them VERBATIM to the gateway, so expose stable claude-eco-N aliases
+        # (one per exposed model) and map each to its upstream model here.
+        # Idempotent: existing aliases are not re-aliased.
+        real_models = [m for m in settings.exposed_models if not claude_desktop.is_alias(m)]
+        aliases = [claude_desktop.desktop_alias_name(i) for i in range(len(real_models))]
+        model_entries = claude_desktop.desktop_models(real_models)
+        alias_map = dict(zip(aliases, real_models))
+        if alias_map:
+            merged_overrides = dict(settings.model_overrides)
+            merged_overrides.update(alias_map)
+            settings.model_overrides = merged_overrides
+            settings.exposed_models = list(dict.fromkeys(aliases + real_models))
+            persist_settings()
         try:
             claude_desktop.apply(desktop_app_dir, base_url, api_key, backup_dir=desktop_backup_dir,
-                                 exposed_models=settings.exposed_models)
+                                 model_entries=model_entries)
         except (OSError, ValueError) as exc:
             return error_json(400, str(exc), "invalid_request_error")
         return desktop_state()

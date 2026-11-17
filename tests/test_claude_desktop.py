@@ -55,15 +55,32 @@ def test_apply_seeds_models_and_bearer_scheme(tmp_path):
     app_dir = tmp_path / "Claude-3p"
     backup_dir = tmp_path / "backup"
     _seed(app_dir)
-    apply(app_dir, "http://127.0.0.1:18090", "sk-test", backup_dir=backup_dir,
-          exposed_models=["openrouter/free", "nvidia/nemotron-3.5-lightning:free"])
+    entries = claude_desktop.desktop_models(["openrouter/free", "nvidia/nemotron-3.5-lightning:free"])
+    apply(app_dir, "http://127.0.0.1:18090", "sk-test", backup_dir=backup_dir, model_entries=entries)
     profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text())
     # The app's own auth-scheme enum is ["bearer", "x-api-key"] with default
     # "bearer"; pinned explicitly so the static key is sent as a Bearer header.
     assert profile["inferenceGatewayAuthScheme"] == "bearer"
     assert profile["inferenceCredentialKind"] == "static"
-    # Model picker seeded from the proxy's exposed models (full IDs only)
-    assert profile["inferenceModels"] == ["openrouter/free", "nvidia/nemotron-3.5-lightning:free"]
+    # Model picker seeded with validation-safe alias entries: the name must
+    # contain an Anthropic allow-token, carry no deny token (ernie etc.) and
+    # is what the app sends VERBATIM as the gateway model id.
+    models = profile["inferenceModels"]
+    assert [m["name"] for m in models] == ["claude-eco-1", "claude-eco-2"]
+    assert [m["labelOverride"] for m in models] == ["openrouter/free", "nvidia/nemotron-3.5-lightning:free"]
+    assert [m["anthropicFamilyTier"] for m in models] == ["sonnet", "haiku"]
+    assert models[0]["isFamilyDefault"] is True and models[1]["isFamilyDefault"] is True
+
+
+def test_alias_names_are_validation_safe():
+    from proxy.claude_desktop import desktop_alias_name
+    allow = ("claude", "sonnet", "opus", "haiku", "fable", "mythos", "anthropic")
+    deny = ("gpt", "gemini", "qwen", "ernie", "openai", "llama", "#", ":", "/")
+    for index in range(30):
+        name = desktop_alias_name(index)
+        lowered = name.lower()
+        assert any(token in lowered for token in allow)
+        assert not any(token in lowered for token in deny)
 
 
 def test_apply_without_models_omits_inference_models(tmp_path):

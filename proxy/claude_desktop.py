@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -114,7 +115,51 @@ def _write_developer_settings(app_dir: Path) -> None:
     _write_json(path, data)
 
 
-def _write_entry(app_dir: Path, base_url: str, api_key: str, exposed_models: list[str] | None = None) -> None:
+def desktop_alias_name(index: int) -> str:
+    """Validation-safe alias for exposed model #index (0-based).
+
+    Claude Desktop validates Model list entries with substring heuristics: the
+    name must contain one of claude/sonnet/opus/haiku/fable/mythos/anthropic and
+    must not contain deny tokens (gpt, gemini, qwen, ernie, openai, llama, ...).
+    The name is sent to the gateway VERBATIM as the model id, so the proxy maps
+    it 1:1 to the real upstream model via model_overrides.
+    """
+    return f"claude-eco-{index + 1}"
+
+
+_ALIAS_RE = re.compile(r"^claude-eco-\d+$")
+
+
+def is_alias(name: str) -> bool:
+    return bool(_ALIAS_RE.match(name or ""))
+
+
+def desktop_models(exposed_models: list[str] | None) -> list[dict[str, Any]] | None:
+    """inferenceModels entries for the profile: alias name + real display name.
+
+    Tiers make Desktop's sonnet/haiku/opus class slots resolve to our entries;
+    the first entry of each tier is that tier's default.
+    """
+    if not exposed_models:
+        return None
+    tier_cycle = ("sonnet", "haiku", "opus", "fable")
+    seen_tiers: set[str] = set()
+    entries = []
+    for index, model in enumerate(exposed_models[:200]):
+        tier = tier_cycle[index] if index < len(tier_cycle) else tier_cycle[index % len(tier_cycle)]
+        entry: dict[str, Any] = {
+            "name": desktop_alias_name(index),
+            "labelOverride": model,
+            "anthropicFamilyTier": tier,
+        }
+        if tier not in seen_tiers:
+            entry["isFamilyDefault"] = True
+            seen_tiers.add(tier)
+        entries.append(entry)
+    return entries
+
+
+def _write_entry(app_dir: Path, base_url: str, api_key: str, model_entries: list[dict[str, Any]] | None = None) -> None:
     profile: dict[str, Any] = {
         "authentication": {"disableClaudeAiSignIn": True},
         "unstableDisableModelVerification": True,
@@ -130,12 +175,13 @@ def _write_entry(app_dir: Path, base_url: str, api_key: str, exposed_models: lis
         # ANTHROPIC_AUTH_TOKEN for embedded Claude Code), never as x-api-key.
         "inferenceGatewayAuthScheme": "bearer",
     }
-    # Seed the model list from the proxy's exposed models. The app's model
-    # picker prefers profile models over live discovery, so the picker stays
-    # populated even when discovery cannot run. Entries must be full model IDs
-    # (the app rejects aliases like 'sonnet' here when discovery is off).
-    if exposed_models:
-        profile["inferenceModels"] = list(exposed_models)[:200]
+    # Seed the model list from the proxy's exposed models, aliased to
+    # validation-safe claude-* names (Desktop rejects ids with provider
+    # prefixes like 'openrouter/free': they lack an Anthropic allow-token and
+    # may carry deny tokens; see desktop_models()). The alias name is what the
+    # app sends as the model id, so the proxy aliases it via model_overrides.
+    if model_entries:
+        profile["inferenceModels"] = model_entries
     _write_json(_entry_path(app_dir, ECOGPT_ENTRY_ID), profile)
 
 
@@ -180,14 +226,14 @@ def status(app_dir: Path = DEFAULT_APP_DIR, backup_dir: Path = DEFAULT_BACKUP_DI
 
 
 def apply(app_dir: Path, base_url: str, api_key: str, *, name: str = "ecoGPT",
-          backup_dir: Path = DEFAULT_BACKUP_DIR, exposed_models: list[str] | None = None) -> dict[str, Any]:
+          backup_dir: Path = DEFAULT_BACKUP_DIR, model_entries: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     if not app_dir.exists():
         raise ValueError(
             f"Claude Desktop data not found at {app_dir}; start Claude Desktop once before applying"
         )
     _take_backups(app_dir, backup_dir)
     _write_developer_settings(app_dir)
-    _write_entry(app_dir, base_url, api_key, exposed_models)
+    _write_entry(app_dir, base_url, api_key, model_entries)
     _set_applied(app_dir, ECOGPT_ENTRY_ID, name)
     return status(app_dir, backup_dir)
 
