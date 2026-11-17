@@ -464,3 +464,39 @@ def test_cookied_visitor_still_sees_genuine_upstream_401() -> None:
         assert "dsh web authentication required" in response.text
     finally:
         chat_ui.httpx.AsyncClient = original
+
+
+def test_buffered_proxy_response_strips_content_encoding() -> None:
+    """Regression: ERR_CONTENT_DECODING_FAILED in the browser.
+
+    The harness serves gzip; httpx decodes the buffered body via aread(), but
+    the relay used to forward the upstream content-encoding header, so the
+    browser tried to gunzip plain bytes. The proxied response must carry the
+    decoded body with NO content-encoding header.
+    """
+    import gzip as _gzip
+
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=tok123"
+    plain = b"<html>ecoGPT chat</html>"
+    packed = _gzip.compress(plain)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # session cookie present -> harness serves the asset
+        return httpx.Response(
+            200, content=packed,
+            headers={"content-type": "text/html", "content-encoding": "gzip",
+                     "content-length": str(len(packed))})
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(handler, *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        cookie = _harness_cookie(cfg)
+        resp = client.get("/chat/", headers={"cookie": cookie}, follow_redirects=False)
+        assert resp.status_code == 200
+        assert "content-encoding" not in {k.lower() for k in resp.headers.keys()}
+        assert resp.content == plain  # decoded, browser-decodable as-is
+    finally:
+        chat_ui.httpx.AsyncClient = original

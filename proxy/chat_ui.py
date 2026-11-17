@@ -347,7 +347,11 @@ def create_chat_router(
             return _login_interstitial(cfg)
         return Response(data, status_code=upstream_response.status_code,
                         headers={k: v for k, v in upstream_response.headers.items()
-                                 if k.lower() not in _HOP_HEADERS | {"content-length"}})  # Response() recomputes length
+                                 # Response() recomputes length; content-encoding must go too:
+                                 # httpx already decoded the body (aread), forwarding the
+                                 # gzip/br header makes browsers fail with
+                                 # ERR_CONTENT_DECODING_FAILED
+                                 if k.lower() not in _HOP_HEADERS | {"content-length", "content-encoding"}})
 
     return router
 
