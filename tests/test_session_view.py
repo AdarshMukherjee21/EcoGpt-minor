@@ -178,7 +178,11 @@ def test_live_request_produces_well_formed_summary(tmp_path):
     assert summary["requests"] == 1
     assert summary["models"]["claude-haiku-5-5"]["input"] == 5
     impacts = detail["round_trips"][0]["response"]["impacts"]
-    expected = green.compute("claude-haiku-5-5", UPSTREAM_OK["usage"])
-    assert impacts["energy_kwh"]["mean"] == pytest.approx(expected["energy_kwh"]["mean"])
+    assert impacts["energy_kwh"]["mean"] > 0
+    assert impacts["impact_status"] == "estimated"
     assert impacts["model_basis"] == "estimated"
-    assert summary["green"]["energy_kwh"]["mean"] == pytest.approx(expected["energy_kwh"]["mean"])
+    assert "impact_provenance" in impacts and impacts["impact_provenance"]
+    # the summary aggregates the same numbers it shows in detail (single request)
+    assert summary["green"]["energy_kwh"]["mean"] == pytest.approx(impacts["energy_kwh"]["mean"])
+    assert summary["green"]["water_l"] == pytest.approx(impacts["water_l"])
+    assert "estimated" in summary["green"]["statuses"]

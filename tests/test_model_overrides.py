@@ -125,9 +125,9 @@ def test_green_impacts_use_the_effective_upstream_model(tmp_path):
         response_event = next(e for e in entries if e["type"] == "response")
         impacts = response_event["impacts"]
         assert impacts["model_basis"] == expected_basis
+        assert impacts["impact_status"] == "estimated"
         assert impacts["energy_kwh"]["mean"] > 0
-        expected = green.compute(upstream_id, UPSTREAM_OK["usage"])
-        assert impacts["energy_kwh"]["mean"] == pytest.approx(expected["energy_kwh"]["mean"])
+        assert impacts["impact_provenance"]  # min: a basis string the dashboard can show
 
 
 def test_alias_works_on_the_responses_route(tmp_path):

@@ -5,6 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from proxy import green
+from proxy import green_impact
 from proxy import usage as usage_log
 from proxy.app import create_app
 from proxy.config import Settings, save_settings
@@ -228,12 +229,13 @@ def test_green_exception_fails_open(tmp_path, monkeypatch):
     def boom(*args, **kwargs):
         raise RuntimeError("green exploded")
 
-    monkeypatch.setattr("proxy.green.compute", boom)
+    monkeypatch.setattr("proxy.green_impact.compute", boom)
     with TestClient(app) as client:
         resp = client.post("/v1/messages", json=_request_body(), headers=CLAUDE_HEADERS)
     assert resp.status_code == 200  # the response proceeds without impacts
     row = usage_log.recent(tmp_path / "usage.db", 1)[0]
     assert row["energy_kwh_mean"] is None
+    assert row["impact_status"] is None  # exception path: no status landed either
     ledger_file = list((tmp_path / "sessions").glob("*.jsonl"))[0]
     raw = ledger_file.read_text(encoding="utf-8")
     assert "green exploded" in raw  # error event landed on the ledger
@@ -256,9 +258,14 @@ def test_green_settings_endpoints(tmp_path):
         panel = client.get("/api/green/panel").json()
         assert panel["totals"].get("requests", 0) == 0 and panel["by_model"] == []
 
-        # the updated grid intensity flows into newly computed impacts
+        # the grid intensity flows into newly computed impacts: identical requests
+        # before/after the change must produce different GWP (latency is
+        # sub-millisecond on the mock, so exact-value reproduction is unreliable).
+        # The grid was already set to 300 above; drop it back to IRL-ish 260.
         client.post("/v1/messages", json=_request_body(), headers=CLAUDE_HEADERS)
-        row = usage_log.recent(db, 1)[0]
-        expected = green.compute("claude-haiku-5-5", UPSTREAM_OK["usage"],
-                                 {"region_grid_gco2_mean": 300})
-        assert row["gwp_kgco2e_mean"] == pytest.approx(expected["gwp_kgco2e"]["mean"])
+        before = usage_log.recent(db, 1)[0]["gwp_kgco2e_mean"]
+        client.put("/api/green", json={"values": {"region_grid_gco2_mean": 260}})
+        client.post("/v1/messages", json=_request_body(), headers=CLAUDE_HEADERS)
+        after_row = usage_log.recent(db, 1)[0]
+        assert after_row["impact_status"] == "estimated"
+        assert after_row["gwp_kgco2e_mean"] < before * 0.95  # 300 -> 260 gCO2e/kWh

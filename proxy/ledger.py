@@ -404,9 +404,28 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
     green = None
     with_impacts = [e for e in responses if isinstance(e.get("impacts"), dict)]
     if with_impacts:
+        def _sum_scalar(entries: list[dict[str, Any]], path: tuple[str, ...]) -> float:
+            total = 0.0
+            for entry in entries:
+                node: Any = entry
+                for part in path:
+                    node = node.get(part) if isinstance(node, dict) else None
+                if isinstance(node, (int, float)):
+                    total += float(node)
+            return total
+
         green = {
             "energy_kwh": _sum_bound(with_impacts, ("impacts", "energy_kwh")),
             "gwp_kgco2e": _sum_bound(with_impacts, ("impacts", "gwp_kgco2e")),
+            # Single-value categories (mean bound); always shown alongside provenance.
+            "water_l": _sum_scalar(with_impacts, ("impacts", "water_l")),
+            "adpe_kg_sbeq": _sum_scalar(with_impacts, ("impacts", "adpe_kg_sbeq")),
+            "primary_mj": _sum_scalar(with_impacts, ("impacts", "primary_mj")),
+            "statuses": sorted({
+                str(e["impacts"]["impact_status"])
+                for e in with_impacts
+                if isinstance(e["impacts"].get("impact_status"), str)
+            }),
         }
     return {
         "requests": requests,

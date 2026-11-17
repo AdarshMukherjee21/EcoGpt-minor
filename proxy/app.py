@@ -9,7 +9,7 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 from urllib.parse import urlsplit
 
 import httpx
@@ -21,6 +21,7 @@ from . import claude_config
 from . import claude_desktop
 from . import features as features_settings
 from . import green as green_metrics
+from . import green_impact
 from . import headroom_settings
 from . import ledger
 from . import model_cache
@@ -266,6 +267,8 @@ def create_app(
         duration_ms: float,
         compression: dict[str, Any] | None,
         impacts: dict[str, Any] | None = None,
+        ttft_ms: float | None = None,
+        tps: float | None = None,
     ) -> None:
         usage_log.record(
             db_path,
@@ -278,6 +281,8 @@ def create_app(
             duration_ms=int(duration_ms),
             compression=compression,
             impacts=impacts,
+            ttft_ms=int(ttft_ms) if ttft_ms is not None else None,
+            tps=tps,
         )
 
     # --- Ledger observers (tracing flag gated; every write fails open) ---------------
@@ -363,24 +368,57 @@ def create_app(
 
     _green_unknown_models: set[tuple[str, str]] = set()
 
-    def compute_impacts(ctx: RequestContext, usage: dict[str, Any] | None) -> dict[str, Any] | None:
+    def compute_impacts(
+        ctx: RequestContext,
+        usage: dict[str, Any] | None,
+        *,
+        duration_ms: float = 0.0,
+        ttft_ms: float | None = None,
+    ) -> dict[str, Any] | None:
         """Green metrics observer: flag-gated, fail-open, never mutates the request."""
         if not ctx.features["green_metrics"] or not usage:
             return None
+        # TPS follows the same convention as the reference demo: tokens after the
+        # first over generation time; only meaningful when TTFT was observed.
+        tps = None
+        if ttft_ms and ttft_ms > 0 and duration_ms > ttft_ms and (usage.get("output_tokens") or 0) > 1:
+            generation_s = (duration_ms - ttft_ms) / 1000.0
+            if generation_s > 0:
+                tps = (usage["output_tokens"] - 1) / generation_s
         try:
             # Attribute impacts to the *effective* upstream model (tokens are
             # consumed by it, even when an alias name faces the client).
-            impacts = green_metrics.compute(ctx.upstream_model or ctx.model, usage, settings.green)
+            impacts = green_impact.compute(
+                ctx.upstream_model or ctx.model,
+                usage,
+                settings.green,
+                duration_ms=duration_ms,
+                ttft_ms=ttft_ms,
+                tps=tps,
+            )
         except Exception as exc:  # noqa: BLE001 - green must never break a response
             logger.error("green metrics failed: %s", exc)
             ledger_error(ctx, "green", f"{type(exc).__name__}: {exc}")
             return None
-        if impacts.get("model_basis") == "unknown":
+        # Observed stream timings are part of the impact record (usage DB + ledger).
+        if ttft_ms is not None:
+            impacts["ttft_ms"] = ttft_ms
+        if tps is not None:
+            impacts["tps"] = tps
+        status = impacts.get("impact_status")
+        if status == "unconfigured_model":
             marker = (ctx.session_key or ledger.NO_SESSION_KEY, ctx.upstream_model or ctx.model)
             if marker not in _green_unknown_models:
                 _green_unknown_models.add(marker)
                 ledger_error(ctx, "green_unknown_model",
-                             f"no green factors for model '{ctx.upstream_model or ctx.model}'; impacts recorded as null")
+                             f"no green parameters for model '{ctx.upstream_model or ctx.model}'; "
+                             "impacts recorded as null")
+        elif status == "missing_usage":
+            marker = (ctx.session_key or ledger.NO_SESSION_KEY, "missing_usage")
+            if marker not in _green_unknown_models:
+                _green_unknown_models.add(marker)
+                ledger_error(ctx, "green_missing_usage",
+                             str(impacts.get("impact_provenance") or "no reliable usage for green estimation"))
         return impacts
 
     def observe_response(
@@ -395,11 +433,14 @@ def create_app(
         duration_ms: float,
         stop_reason: str | None = None,
         content: Any = None,
+        ttft_ms: float | None = None,
     ) -> None:
         """Log the usage row, write the ledger response event, and schedule the sidecar relay."""
-        impacts = compute_impacts(ctx, usage)
+        impacts = compute_impacts(ctx, usage, duration_ms=duration_ms, ttft_ms=ttft_ms)
+        tps = impacts.get("tps") if isinstance(impacts, dict) else None
         log_usage(model=ctx.model, route=route, stream=stream, status=status, usage=usage,
-                  cost=cost, duration_ms=duration_ms, compression=record, impacts=impacts)
+                  cost=cost, duration_ms=duration_ms, compression=record, impacts=impacts,
+                  ttft_ms=ttft_ms, tps=tps)
         if ctx.features["tracing"]:
             ledger.response_event(
                 ledger_dir,
@@ -571,7 +612,8 @@ def create_app(
                 observe_response(ctx, record, route=ROUTE_ANTHROPIC, stream=True, status=resp.status_code,
                                  usage=tracker.usage, cost=header_cost(resp.headers),
                                  duration_ms=(time.monotonic() - started) * 1000,
-                                 stop_reason=tracker.stop_reason)
+                                 stop_reason=tracker.stop_reason,
+                                 ttft_ms=tracker.ttft_ms(started))
 
         return StreamingResponse(relay(), status_code=resp.status_code, media_type=media)
 
@@ -615,6 +657,7 @@ def create_app(
 
         async def relay():
             data_lines: list[str] = []
+            first_content: float | None = None
             try:
                 async for line in resp.aiter_lines():
                     if line.startswith("data:"):
@@ -627,6 +670,12 @@ def create_app(
                         except ValueError:
                             continue
                         if isinstance(event, dict):
+                            # First content-bearing event ≈ TTFT (same convention as
+                            # the reference demo; approximate for reasoning models).
+                            if (first_content is None
+                                    and event.get("type") in ("response.output_text.delta",
+                                                             "response.reasoning_summary_text.delta")):
+                                first_content = time.monotonic()
                             for chunk in converter.feed(event):
                                 yield chunk
             finally:
@@ -634,7 +683,8 @@ def create_app(
                 observe_response(ctx, record, route=ROUTE_RESPONSES, stream=True, status=resp.status_code,
                                  usage=converter.usage, cost=header_cost(resp.headers) or converter.cost,
                                  duration_ms=(time.monotonic() - started) * 1000,
-                                 stop_reason=converter.stop_reason)
+                                 stop_reason=converter.stop_reason,
+                                 ttft_ms=(first_content - started) * 1000 if first_content is not None else None)
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
@@ -677,10 +727,16 @@ def create_app(
         converter = ChatToAnthropic(ctx.requested_model)
 
         async def relay():
+            first_content: float | None = None
             try:
                 async for chunk in resp.aiter_bytes():
                     output = converter.feed(chunk)
                     if output:
+                        # First translated chunk approximates the first token (the
+                        # chat upstream emits its role delta when generation starts);
+                        # documented as approximate, like the demo's TTFT caveat.
+                        if first_content is None:
+                            first_content = time.monotonic()
                         yield output
             finally:
                 await resp.aclose()
@@ -690,7 +746,8 @@ def create_app(
                 observe_response(ctx, record, route=ROUTE_CHAT, stream=True, status=resp.status_code,
                                  usage=stream_usage, cost=header_cost(resp.headers) or converter.cost,
                                  duration_ms=(time.monotonic() - started) * 1000,
-                                 stop_reason=converter.stop_reason)
+                                 stop_reason=converter.stop_reason,
+                                 ttft_ms=(first_content - started) * 1000 if first_content is not None else None)
 
         return StreamingResponse(relay(), media_type="text/event-stream")
 
@@ -1055,18 +1112,22 @@ def create_app(
 
     @app.get("/api/green")
     async def green_view():
+        mix, mix_source = green_impact.electricity(settings.green.get("region_country", "WOR"))
         return {
             "schema": green_metrics.GREEN_SCHEMA,
             "values": settings.green,
             "attribution": green_metrics.attribution(),
+            "electricity": {**mix, "source": mix_source},
         }
 
     @app.get("/api/green/factors")
     async def green_factors_view():
         factors = green_metrics.load_factors()
         overrides = green_metrics.load_overrides()
+        rows = (factors.get("models") or {}).items()
         models = []
-        for key, row in sorted((factors.get("models") or {}).items()):
+        for key, row in sorted(rows):
+            params = green_impact._params_from_row(row)
             models.append(
                 {
                     "model": key,
@@ -1074,6 +1135,8 @@ def create_app(
                     "arch": row.get("arch"),
                     "wh_per_output_token": row.get("wh_per_output_token") or {},
                     "overridden": key in overrides,
+                    "mode": green_impact._row_mode(row),
+                    "params": {"active_b": params["active_b"], "total_b": params["total_b"]} if params else None,
                 }
             )
         return {"models": models, "attribution": green_metrics.attribution()}
@@ -1085,21 +1148,54 @@ def create_app(
             if value is None:
                 merged.pop(key, None)
                 continue
+            if not isinstance(value, dict):
+                return error_json(400, f"{key}: expected an object", "invalid_request_error")
+            parsed: dict[str, Any] = {"basis": "user-override"}
             wpt = value.get("wh_per_output_token")
-            if not isinstance(wpt, dict):
-                return error_json(400, f"{key}: expected wh_per_output_token {{min, mean, max}}",
-                                  "invalid_request_error")
-            parsed = {}
-            for bound in ("min", "mean", "max"):
-                try:
-                    parsed[bound] = float(wpt[bound])
-                except (KeyError, TypeError, ValueError):
-                    return error_json(400, f"{key}: wh_per_output_token.{bound} must be a number",
+            if wpt is not None:
+                if not isinstance(wpt, dict):
+                    return error_json(400, f"{key}: expected wh_per_output_token {{min, mean, max}}",
                                       "invalid_request_error")
-            merged[key] = {"wh_per_output_token": parsed, "basis": "user-override"}
+                bounds = {}
+                for bound in ("min", "mean", "max"):
+                    try:
+                        bounds[bound] = float(wpt[bound])
+                    except (KeyError, TypeError, ValueError):
+                        return error_json(400, f"{key}: wh_per_output_token.{bound} must be a number",
+                                          "invalid_request_error")
+                parsed["wh_per_output_token"] = bounds
+            params: dict[str, float] = {}
+            for field in ("active_b", "total_b"):
+                raw = value.get(field)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    params[field] = float(raw)
+                except (TypeError, ValueError):
+                    return error_json(400, f"{key}: {field} must be a number", "invalid_request_error")
+                if params[field] <= 0:
+                    return error_json(400, f"{key}: {field} must be positive", "invalid_request_error")
+            if "total_b" in params and "active_b" in params and params["active_b"] > params["total_b"]:
+                return error_json(400, f"{key}: active_b must not exceed total_b", "invalid_request_error")
+            if params:
+                parsed["params"] = params
+            if not wpt and not params:
+                return error_json(400, f"{key}: provide wh_per_output_token or active_b/total_b",
+                                  "invalid_request_error")
+            merged[key] = parsed
         GREEN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
         GREEN_OVERRIDES_PATH.write_text(json.dumps({"models": merged}, indent=2), encoding="utf-8")
         return {"ok": True, "overrides": merged}
+
+    @app.post("/api/green/models/match")
+    async def green_models_match():
+        """Re-read the vendored EcoLogits catalogue (drop the cache) and report matches."""
+        green_impact._catalogue_cache.clear()
+        factors = green_metrics.load_factors()
+        keys = sorted((factors.get("models") or {}).keys())
+        matches = {key: green_impact.catalogue_match(key) is not None for key in keys}
+        revision = green_impact.ECOLOGITS_REVISION
+        return {"ok": True, "revision": revision, "matches": matches}
 
     @app.put("/api/green")
     async def green_update(update: HeadroomUpdate):
@@ -1115,6 +1211,35 @@ def create_app(
     @app.get("/api/green/panel")
     async def green_panel_view():
         return usage_log.green_panel(db_path)
+
+    @app.get("/api/green/coverage")
+    async def green_coverage_view():
+        return usage_log.coverage(db_path)
+
+    @app.get("/api/usage/export.csv")
+    async def usage_export_csv():
+        """Full request ledger as CSV (all columns, including green phases)."""
+
+        def rows() -> Iterator[bytes]:
+            all_rows = usage_log.recent(db_path, 10_000_000)
+            if not all_rows:
+                yield b""
+                return
+            fields = list(all_rows[0].keys())
+            yield (",".join(fields) + "\n").encode()
+            for row in reversed(all_rows):  # chronological order
+                cells = []
+                for field in fields:
+                    value = row.get(field)
+                    if value is None:
+                        cells.append("")
+                    else:
+                        cell = str(value).replace('"', '""')
+                        cells.append(f'"{cell}"' if ("," in cell or '"' in cell or "\n" in cell) else cell)
+                yield (",".join(cells) + "\n").encode()
+
+        return StreamingResponse(rows(), media_type="text/csv",
+                                 headers={"Content-Disposition": 'attachment; filename="green_requests.csv"'})
 
     @app.get("/api/sessions")
     async def sessions_view():

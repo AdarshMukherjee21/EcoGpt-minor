@@ -45,6 +45,17 @@ MIGRATIONS = {
     "gwp_kgco2e_min": "real",
     "gwp_kgco2e_max": "real",
     "model_basis": "text",
+    # Green metrics (Phase 2): EcoLogits-native core. Water/ADPe/PE are mean-bound
+    # single values (always displayed with impact_provenance in the dashboard);
+    # energy/GWP keep min/mean/max intervals from both compute paths.
+    # Legacy rows (energy set, impact_status NULL) read as estimated by the queries.
+    "water_l": "real",
+    "adpe_kg_sbeq": "real",
+    "primary_mj": "real",
+    "impact_status": "text",
+    "impact_provenance": "text",
+    "ttft_ms": "integer",
+    "tps": "real",
 }
 
 
@@ -80,19 +91,24 @@ def record(
     duration_ms: int,
     compression: dict[str, Any] | None = None,
     impacts: dict[str, Any] | None = None,
+    ttft_ms: int | None = None,
+    tps: float | None = None,
 ) -> None:
     counts = normalize_anthropic_usage(usage)
     comp = compression or {}
-    energy = (impacts or {}).get("energy_kwh") or {}
-    gwp = (impacts or {}).get("gwp_kgco2e") or {}
+    impacts = impacts or {}
+    energy = impacts.get("energy_kwh") or {}
+    gwp = impacts.get("gwp_kgco2e") or {}
     with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "insert into usage (ts, model, route, stream, status, input_tokens, output_tokens, "
             "cache_read_tokens, cache_write_tokens, cost_reported, duration_ms, compressed, "
             "tokens_before, tokens_after, tokens_saved, session_source, session_replayed, attempts, "
             "fallback, turn_id, relayed, energy_kwh_mean, energy_kwh_min, energy_kwh_max, "
-            "gwp_kgco2e_mean, gwp_kgco2e_min, gwp_kgco2e_max, model_basis) "
-            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "gwp_kgco2e_mean, gwp_kgco2e_min, gwp_kgco2e_max, model_basis, "
+            "water_l, adpe_kg_sbeq, primary_mj, impact_status, impact_provenance, ttft_ms, tps) "
+            "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
+            "?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 model,
@@ -121,7 +137,14 @@ def record(
                 gwp.get("mean"),
                 gwp.get("min"),
                 gwp.get("max"),
-                (impacts or {}).get("model_basis") if impacts is not None else None,
+                impacts.get("model_basis"),
+                impacts.get("water_l"),
+                impacts.get("adpe_kg_sbeq"),
+                impacts.get("primary_mj"),
+                impacts.get("impact_status"),
+                impacts.get("impact_provenance"),
+                ttft_ms,
+                tps,
             ),
         )
 
@@ -199,42 +222,116 @@ def daily(path: Path, days: int = 30) -> list[dict[str, Any]]:
     return out[-days:]
 
 
+# Columns and the estimated-row filter shared by the green queries. Legacy rows
+# (Phase 1: energy set, impact_status NULL) also count as estimated.
+_ESTIMATED_WHERE = "(impact_status = 'estimated' OR (impact_status IS NULL AND energy_kwh_mean IS NOT NULL))"
 _GREEN_COLUMNS = (
     "coalesce(sum(energy_kwh_mean), 0.0) as energy_kwh_mean, "
     "coalesce(sum(energy_kwh_min), 0.0) as energy_kwh_min, "
     "coalesce(sum(energy_kwh_max), 0.0) as energy_kwh_max, "
     "coalesce(sum(gwp_kgco2e_mean), 0.0) as gwp_kgco2e_mean, "
     "coalesce(sum(gwp_kgco2e_min), 0.0) as gwp_kgco2e_min, "
-    "coalesce(sum(gwp_kgco2e_max), 0.0) as gwp_kgco2e_max"
+    "coalesce(sum(gwp_kgco2e_max), 0.0) as gwp_kgco2e_max, "
+    "coalesce(sum(water_l), 0.0) as water_l, "
+    "coalesce(sum(adpe_kg_sbeq), 0.0) as adpe_kg_sbeq, "
+    "coalesce(sum(primary_mj), 0.0) as primary_mj"
 )
 
 
 def green_panel(path: Path) -> dict[str, Any]:
-    """Aggregations for the Green panel: totals, per-model and per-day (UTC) rollups."""
+    """Aggregations for the Green panel: totals, per-model and per-day (UTC) rollups,
+    plus recent per-request rows for the impact-over-time chart."""
     def query(sql: str, args: tuple = ()) -> list[dict[str, Any]]:
         with closing(sqlite3.connect(path)) as db:
             db.row_factory = sqlite3.Row
             return [dict(row) for row in db.execute(sql, args)]
 
-    total = query(f"select count(*) as requests, {_GREEN_COLUMNS} from usage where energy_kwh_mean is not null")
+    estimate_where = f"where {_ESTIMATED_WHERE}"
+    total = query(f"select count(*) as requests, {_GREEN_COLUMNS} from usage {estimate_where}")
     by_model = query(
         "select model, model_basis, count(*) as requests, "
-        f"{_GREEN_COLUMNS} from usage where energy_kwh_mean is not null group by model order by energy_kwh_mean desc"
+        f"{_GREEN_COLUMNS} from usage {estimate_where} group by model order by energy_kwh_mean desc"
     )
     by_day = query(
         "select date(ts, 'unixepoch') as day, count(*) as requests, "
-        f"{_GREEN_COLUMNS} from usage where energy_kwh_mean is not null group by day order by day desc"
+        f"{_GREEN_COLUMNS} from usage {estimate_where} group by day order by day desc"
     )
-    return {"totals": total[0] if total else {}, "by_model": by_model, "by_day": by_day}
+    recent = [
+        {
+            "ts": row["ts"],
+            "model": row["model"],
+            "energy_kwh_mean": row["energy_kwh_mean"],
+            "gwp_kgco2e_mean": row["gwp_kgco2e_mean"],
+            "water_l": row["water_l"],
+            "primary_mj": row["primary_mj"],
+            "impact_status": row["impact_status"] or "estimated",
+            "legacy": row["impact_status"] is None,
+        }
+        for row in query(
+            "select ts, model, energy_kwh_mean, gwp_kgco2e_mean, water_l, primary_mj, impact_status "
+            f"from usage {estimate_where} order by id desc limit 200"
+        )
+    ]
+    return {
+        "totals": total[0] if total else {},
+        "by_model": by_model,
+        "by_day": by_day,
+        "recent": list(reversed(recent)),
+    }
+
+
+def coverage(path: Path) -> dict[str, Any]:
+    """Coverage accounting for the dashboard caption: only 'estimated' rows carry
+    numbers, so totals are partial whenever any request was unconfigured, missing
+    usage, or recorded before green metrics existed."""
+    def query(sql: str, args: tuple = ()) -> list[dict[str, Any]]:
+        with closing(sqlite3.connect(path)) as db:
+            db.row_factory = sqlite3.Row
+            return [dict(row) for row in db.execute(sql, args)]
+
+    rows = query(
+        # aliased 'impact_state' (not 'status'): group by must not collide with the
+        # real HTTP status column that SQLite would otherwise prefer.
+        "select coalesce(impact_status, 'legacy_estimated') as impact_state, count(*) as requests "
+        "from usage where energy_kwh_mean is not null or impact_status is not null group by impact_state"
+    )
+    total_rows = query("select count(*) as requests from usage")[0]["requests"]
+    by_status = {row["impact_state"]: row["requests"] for row in rows}
+    estimated = by_status.get("estimated", 0) + by_status.get("legacy_estimated", 0)
+    return {
+        "requests_total": total_rows,
+        "estimated": estimated,
+        "legacy_estimated": by_status.get("legacy_estimated", 0),
+        "by_status": by_status,
+        "ratio": round(estimated / total_rows, 4) if total_rows else 1.0,
+    }
 
 
 class StreamUsage:
-    """Collects Anthropic usage from a passthrough SSE stream without altering it."""
+    """Collects Anthropic usage from a passthrough SSE stream without altering it.
+
+    Also observes the first content-bearing event (monotonic clock) so the green
+    observer can pass TTFT/TPS to the EcoLogits compute core. Approximate by
+    nature: the first content event is not always the first generated token,
+    especially with reasoning models.
+    """
+
+    CONTENT_TYPES = ("content_block_start", "content_block_delta")
 
     def __init__(self) -> None:
         self._buffer = b""
         self.usage: dict[str, Any] = {}
         self.stop_reason: str | None = None
+        self.first_content: float | None = None
+
+    def note_content(self) -> None:
+        if self.first_content is None:
+            self.first_content = time.monotonic()
+
+    def ttft_ms(self, started: float) -> float | None:
+        if self.first_content is None or started is None or self.first_content < started:
+            return None
+        return (self.first_content - started) * 1000.0
 
     def feed(self, chunk: bytes) -> None:
         self._buffer += chunk
@@ -256,6 +353,8 @@ class StreamUsage:
                 stop = (event.get("delta") or {}).get("stop_reason")
                 if isinstance(stop, str):
                     self.stop_reason = stop
+            if event.get("type") in self.CONTENT_TYPES:
+                self.note_content()
 
     def _merge(self, usage: Any) -> None:
         if isinstance(usage, dict):

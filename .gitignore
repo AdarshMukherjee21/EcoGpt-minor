@@ -3,4 +3,5 @@ __pycache__/
 .pytest_cache/
 data/*
 !data/green_factors.json
+!data/ecologits/
 data/claude-desktop-backup/

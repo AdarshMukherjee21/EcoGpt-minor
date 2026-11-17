@@ -22,7 +22,9 @@ FEATURES: list[dict[str, Any]] = [
      "help": "Compress requests through the Headroom sidecar. Off forwards every request untouched (the A/B control arm)."},
     {"key": "green_metrics", "group": "Features", "kind": "flag", "type": "bool", "default": False,
      "label": "Green metrics",
-     "help": "Energy and emissions estimates per request."},
+     "help": "Per-request impact estimates (energy kWh, CO2e, water, ADPe, primary energy) via the pinned "
+             "EcoLogits core; wh_per_output_token overrides keep the factor arithmetic. Always shown with "
+             "provenance; experimental."},
     {"key": "tracing", "group": "Features", "kind": "flag", "type": "bool", "default": False,
      "label": "Session tracing",
      "help": "Append-only per-session ledger (metadata and content hashes only, never payloads) under data/sessions/."},

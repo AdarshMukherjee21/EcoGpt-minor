@@ -1,0 +1,9 @@
+Pinned EcoLogits catalogues, vendored for reproducibility.
+
+Source: mlco2/ecologits tag 0.10.2 (matches the ecologits==0.10.2 pin in requirements.txt)
+  https://raw.githubusercontent.com/mlco2/ecologits/0.10.2/ecologits/data/models.json
+  https://raw.githubusercontent.com/mlco2/ecologits/0.10.2/ecologits/data/electricity_mixes.json
+
+EcoLogits is licensed CC BY-SA 4.0 — the attribution strings in data/green_factors.json
+must be shown wherever impacts are displayed. Refresh these files only intentionally
+(dashboard "refresh catalogue" button or manual re-download) and record the new revision.
