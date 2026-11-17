@@ -4,6 +4,7 @@ import httpx
 from fastapi.testclient import TestClient
 
 from proxy.app import create_app
+from proxy.claude_desktop import ECOGPT_ENTRY_ID
 from proxy.config import Settings, save_settings
 
 ANTHROPIC_MESSAGE = {
@@ -167,6 +168,37 @@ def test_claude_apply_writes_bearer_env_with_gateway_key(tmp_path):
     assert env["CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY"] == "1"
     assert env["ANTHROPIC_DEFAULT_SONNET_MODEL"] == "claude-haiku-5-5"
     assert data["availableModels"] == ["claude-haiku-5-5"]
+
+
+def test_desktop_apply_labels_models_with_gateway_display_names(tmp_path):
+    """Desktop picker labels come from gateway metadata, falling back to the id."""
+    from proxy.claude_desktop import desktop_alias_name
+
+    settings_path = tmp_path / "config.json"
+    save_settings(Settings(upstream_url="http://gateway.test", exposed_models=["gpt-6-luna", "mystery-model:free"]),
+                  settings_path)
+    app_dir = tmp_path / "Claude-3p"
+    app_dir.mkdir()
+    app = create_app(
+        settings_path=settings_path,
+        db_path=tmp_path / "usage.db",
+        claude_settings_path=tmp_path / "claude-settings.json",
+        desktop_app_dir=app_dir,
+        desktop_backup_dir=tmp_path / "backup",
+        upstream_transport=httpx.MockTransport(_upstream),
+    )
+    with TestClient(app) as client:
+        assert client.post("/api/desktop/apply").status_code == 200
+        state = client.get("/api/state").json()
+    profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text(encoding="utf-8"))
+    models = profile["inferenceModels"]
+    assert [m["name"] for m in models] == [desktop_alias_name(0), desktop_alias_name(1)]
+    # Metadata hit -> display name; miss -> pretty fallback, never a blank label.
+    assert [m["labelOverride"] for m in models] == ["GPT-6 Luna", "Mystery Model (free)"]
+    aliases = [m["name"] for m in models]
+    display = state["settings"]["model_display_names"]
+    assert display[aliases[0]] == "GPT-6 Luna"
+    assert display[aliases[1]] == "Mystery Model (free)"
 
 
 def test_settings_rejects_proxy_as_its_own_upstream(tmp_path):

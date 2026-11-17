@@ -253,10 +253,38 @@ function esc(value) {
 function fmt(n) { return n == null || n === "" ? "0" : Number(n).toLocaleString(); }
 function sig(v, digits = 3) { const n = Number(v); return Number.isFinite(n) && n !== 0 ? Number(n.toPrecision(digits)).toLocaleString() : (n === 0 ? "0" : "–"); }
 async function api(path, opts = {}) {
+  // fetch() defaults a JSON body to text/plain, which FastAPI/pydantic rejects
+  // with 422 — always mark JSON bodies explicitly.
+  if (opts.body != null && !(opts.headers && "content-type" in opts.headers)) {
+    opts.headers = { ...opts.headers, "content-type": "application/json" };
+  }
   const resp = await fetch(path, opts);
   const data = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(data.detail || (data.error && data.error.message) || data.error || `HTTP ${resp.status}`);
+  if (!resp.ok) throw new Error(formatApiError(data, resp.status));
   return data;
+}
+function formatApiError(data, status) {
+  // Handles: string detail; FastAPI 422 {detail: [{loc, msg, type}, ...]};
+  // {detail: {message}}; {error: {message}}; {error: "..."}/{message}.
+  const detail = data && data.detail;
+  if (typeof detail === "string" && detail) return detail;
+  if (Array.isArray(detail)) {
+    const parts = detail.map((item) => {
+      if (typeof item === "string") return item;
+      const loc = Array.isArray(item.loc) ? item.loc.join(".") : String(item.loc ?? "").replace(/^body\.?/, "");
+      const msg = item.msg || item.message || "";
+      return loc ? `${loc}: ${msg}` : msg;
+    }).filter(Boolean);
+    return parts.length ? parts.join("; ") : `HTTP ${status}`;
+  }
+  if (detail && typeof detail === "object" && (detail.message || detail.error)) {
+    return detail.message || detail.error;
+  }
+  if (data && data.error) {
+    return (data.error && data.error.message) || data.error || `HTTP ${status}`;
+  }
+  if (data && typeof data.message === "string" && data.message) return data.message;
+  return `HTTP ${status}`;
 }
 function fmtWhen(ts) {
   if (ts == null) return "–";
@@ -327,6 +355,10 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 
 /* ---------------- state + settings loads ---------------- */
 let STATE = null;
+function modelName(id) {
+  const names = (STATE && STATE.settings && STATE.settings.model_display_names) || {};
+  return (names[id] && String(names[id])) || id;
+}
 async function loadState() {
   STATE = await api("/api/state");
   const s = STATE.settings;
@@ -354,7 +386,7 @@ function renderClaudeClasses(c) {
   container.innerHTML = Object.keys(CLASS_LABELS).map((key) => {
     const current = chosen[key] || "";
     const options = ['<option value="auto">auto</option>'].concat(
-      exposed.map((m) => `<option value="${esc(m)}" ${m === current ? "selected" : ""}>${esc(m)}</option>`)).join("");
+      exposed.map((m) => `<option value="${esc(m)}" title="${esc(m)}" ${m === current ? "selected" : ""}>${esc(modelName(m))}</option>`)).join("");
     return `<div class="providerrow" style="grid-template-columns:150px 1fr">
       <label class="muted" style="font-size:12px">${esc(CLASS_LABELS[key])}</label>
       <select data-claude-class="${esc(key)}">${options}</select>
@@ -442,7 +474,7 @@ async function loadModels() {
     $("models-msg").textContent = `${gatewayModels.length} models`;
     $("models-msg").className = "feedback ok";
   } catch (err) {
-    gatewayModels = (STATE.settings.exposed_models || []).map((id) => ({ id, display_name: id, exposed: true, provider: $("models-provider").value }));
+    gatewayModels = (STATE.settings.exposed_models || []).map((id) => ({ id, display_name: modelName(id), exposed: true, provider: $("models-provider").value }));
     $("models-msg").textContent = `Provider unavailable: ${err.message}`;
     $("models-msg").className = "feedback bad";
   }

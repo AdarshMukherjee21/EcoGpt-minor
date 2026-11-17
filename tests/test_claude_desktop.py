@@ -72,6 +72,16 @@ def test_apply_seeds_models_and_bearer_scheme(tmp_path):
     assert models[0]["isFamilyDefault"] is True and models[1]["isFamilyDefault"] is True
 
 
+def test_desktop_models_prefers_resolved_display_names():
+    models = claude_desktop.desktop_models(
+        ["gpt-6-luna", "mystery-model:free", "blank-name"],
+        ["GPT-6 Luna", "", None],
+    )
+    # Caller-provided display names label the picker; missing/blank entries and a
+    # shorter list fall back to the raw model id (module stays pure/resolved).
+    assert [m["labelOverride"] for m in models] == ["GPT-6 Luna", "mystery-model:free", "blank-name"]
+
+
 def test_alias_names_are_validation_safe():
     from proxy.claude_desktop import desktop_alias_name
     allow = ("claude", "sonnet", "opus", "haiku", "fable", "mythos", "anthropic")

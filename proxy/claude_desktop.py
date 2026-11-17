@@ -134,11 +134,16 @@ def is_alias(name: str) -> bool:
     return bool(_ALIAS_RE.match(name or ""))
 
 
-def desktop_models(exposed_models: list[str] | None) -> list[dict[str, Any]] | None:
+def desktop_models(
+    exposed_models: list[str] | None,
+    display_names: list[str] | None = None,
+) -> list[dict[str, Any]] | None:
     """inferenceModels entries for the profile: alias name + real display name.
 
     Tiers make Desktop's sonnet/haiku/opus class slots resolve to our entries;
-    the first entry of each tier is that tier's default.
+    the first entry of each tier is that tier's default. ``display_names`` is a
+    caller-resolved list aligned with ``exposed_models`` (raw gateway ids are
+    not picker-friendly); missing/blank entries fall back to the raw model id.
     """
     if not exposed_models:
         return None
@@ -147,9 +152,12 @@ def desktop_models(exposed_models: list[str] | None) -> list[dict[str, Any]] | N
     entries = []
     for index, model in enumerate(exposed_models[:200]):
         tier = tier_cycle[index] if index < len(tier_cycle) else tier_cycle[index % len(tier_cycle)]
+        label = model
+        if display_names is not None and index < len(display_names):
+            label = str(display_names[index] or "").strip() or model
         entry: dict[str, Any] = {
             "name": desktop_alias_name(index),
-            "labelOverride": model,
+            "labelOverride": label,
             "anthropicFamilyTier": tier,
         }
         if tier not in seen_tiers:

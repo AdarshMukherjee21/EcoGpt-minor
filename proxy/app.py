@@ -814,9 +814,14 @@ def create_app(
             entry["ts"] = now
         return entry["models"]
 
+    def display_name_for(model_id: str, meta: dict[str, dict[str, Any]]) -> str:
+        """Friendly label for a model id: gateway metadata, else pretty fallback."""
+        info = meta.get(model_id) or {}
+        return str(info.get("display_name") or info.get("name") or "") or pretty_model_name(model_id)
+
     def model_row(model_id: str, meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
         info = meta.get(model_id) or {}
-        display_name = str(info.get("display_name") or info.get("name") or "") or pretty_model_name(model_id)
+        display_name = display_name_for(model_id, meta)
         row: dict[str, Any] = {
             "type": "model",
             "id": model_id,
@@ -927,12 +932,19 @@ def create_app(
 
     @app.get("/api/state")
     async def state_view():
+        meta = await gateway_model_metadata()
+
+        def _display(model_id: str) -> str:
+            # Desktop aliases (claude-eco-N) label as the real model they route to.
+            return display_name_for(settings.model_overrides.get(model_id, model_id), meta)
+
         return {
             "proxy_url": settings.proxy_url(),
             "settings": {
                 "upstream_url": settings.upstream_url,
                 "api_key_set": bool(settings.effective_key()),
                 "exposed_models": settings.exposed_models,
+                "model_display_names": {m: _display(m) for m in settings.exposed_models},
                 "route_overrides": settings.route_overrides,
                 "model_overrides": settings.model_overrides,
                 "providers": [
@@ -1195,7 +1207,12 @@ def create_app(
         # Idempotent: existing aliases are not re-aliased.
         real_models = [m for m in settings.exposed_models if not claude_desktop.is_alias(m)]
         aliases = [claude_desktop.desktop_alias_name(i) for i in range(len(real_models))]
-        model_entries = claude_desktop.desktop_models(real_models)
+        # Picker labels should be human-readable: resolve gateway display names
+        # for the real ids and pass them to the profile builder (which falls
+        # back to the raw id when metadata is missing).
+        meta = await gateway_model_metadata()
+        display_names = [display_name_for(m, meta) for m in real_models]
+        model_entries = claude_desktop.desktop_models(real_models, display_names)
         alias_map = dict(zip(aliases, real_models))
         if alias_map:
             merged_overrides = dict(settings.model_overrides)
