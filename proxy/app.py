@@ -2005,7 +2005,9 @@ def create_app(
             exposed = set(visible_exposed_models())
             choices = {k: v for k, v in choices.items()
                        if v and v != "auto" and v in exposed}
-            claude_config.apply(claude_settings_path, settings.proxy_url(), settings.exposed_models,
+            # Only real models (Desktop alias ids excluded) face Claude Code,
+            # matching the alias-free pickers everywhere else.
+            claude_config.apply(claude_settings_path, settings.proxy_url(), visible_exposed_models(),
                                 gateway_key=gateway_key, model_classes=choices)
         except (OSError, ValueError) as exc:
             return error_json(400, str(exc), "invalid_request_error")

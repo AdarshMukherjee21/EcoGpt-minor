@@ -170,6 +170,25 @@ def test_claude_apply_writes_bearer_env_with_gateway_key(tmp_path):
     assert data["availableModels"] == ["claude-haiku-5-5"]
 
 
+def test_claude_apply_never_offers_desktop_alias_ids(tmp_path):
+    """Desktop alias ids (e.g. free-models-router) stay out of availableModels."""
+    settings_path = tmp_path / "config.json"
+    save_settings(Settings(upstream_url="http://gateway.test",
+                           exposed_models=["openrouter/free", "free-models-router"],
+                           desktop_aliases={"free-models-router": "openrouter/free"}),
+                  settings_path)
+    app = create_app(
+        settings_path=settings_path,
+        db_path=tmp_path / "usage.db",
+        claude_settings_path=tmp_path / "claude-settings.json",
+        upstream_transport=httpx.MockTransport(_upstream),
+    )
+    with TestClient(app) as client:
+        assert client.post("/api/claude/apply").status_code == 200
+    data = json.loads((tmp_path / "claude-settings.json").read_text(encoding="utf-8"))
+    assert data["availableModels"] == ["openrouter/free"]
+
+
 def test_desktop_apply_labels_models_with_gateway_display_names(tmp_path):
     """Desktop picker labels come from gateway metadata, falling back to the id."""
 
