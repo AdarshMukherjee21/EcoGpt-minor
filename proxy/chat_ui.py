@@ -263,7 +263,7 @@ def create_chat_router(
             # Entry URL points at some other origin (dev spike default): the
             # legacy handoff still beats a raw 401.
             return RedirectResponse(sidecar.entry_url, status_code=307)
-        return await _proxy_request(request, path="")
+        return await _proxy_request_shared(cfg, sidecar, request, path="")
 
     # Dedicated login route: ALWAYS forces the token exchange and returns to
     # the chat index, never back into the gate the button is escaping from.
@@ -282,78 +282,118 @@ def create_chat_router(
 
     @router.websocket(cfg.chat_prefix + "/api/remote.mux")
     async def remote_mux(websocket: WebSocket) -> None:
-        connector = ws_connect or _default_ws_connect
-        await websocket.accept()
-        upstream = await connector(cfg.upstream_origin + "/api/remote.mux")
-        pump_down = asyncio.create_task(_pump_ws(upstream, websocket))
-        pump_up = asyncio.create_task(_pump_ws_reverse(websocket, upstream))
-        done, _pending = await asyncio.wait({pump_down, pump_up}, return_when=asyncio.FIRST_COMPLETED)
-        for task in done:
-            if task.exception() is not None:
-                log.warning("chat-UI WS tunnel ended: %s", task.exception())
-        for task in (pump_down, pump_up):
-            task.cancel()
-        await websocket.close()
+        await _tunnel_ws(websocket, cfg, ws_connect)
 
     @router.api_route(cfg.chat_prefix + "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def proxy(path: str, request: Request) -> Response:
-        return await _proxy_request(request, path)
-
-    async def _proxy_request(request: Request, path: str) -> Response:
-        headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
-        # Forward the browser's public Host: the harness validates the session
-        # cookie's audience against the literal on-the-wire Host, and the
-        # client-connection trust fence compares an attached browser Origin
-        # against it — both describe the public origin, so a rewritten
-        # upstream Host would 403 every SPA request with an Origin header
-        # (verified live against the vendored harness).
-        headers["host"] = request.headers["host"]
-        client = httpx.AsyncClient(base_url=cfg.upstream_origin, timeout=httpx.Timeout(90.0))
-        body = await request.body() if request.method not in ("GET", "HEAD") else None
-        upstream_request = client.build_request(request.method, "/" + path, headers=headers, content=body,
-                                                params=request.query_params)
-        try:
-            upstream_response = await client.send(upstream_request, stream=True)
-        except httpx.HTTPError:
-            await client.aclose()
-            return Response("ecoGPT chat is starting; retry in a moment.", status_code=503)
-        content_type = upstream_response.headers.get("content-type", "")
-        if "text/event-stream" in content_type:
-            # Genuinely incremental: relay raw bytes as they arrive.
-            return StreamingResponse(
-                upstream_response.aiter_raw(),
-                status_code=upstream_response.status_code,
-                headers={k: v for k, v in upstream_response.headers.items() if k.lower() not in _HOP_HEADERS},
-                background=BackgroundTask(client.aclose),
-            )
-        # Bufferable JSON/etc: read fully, then close upstream deterministically.
-        data = await upstream_response.aread()
-        await upstream_response.aclose()
-        await client.aclose()
-        if upstream_response.status_code == 401 and not _has_harness_session(request, cfg):
-            # Auth wall hit (cold deep-link / SPA XHR before the session
-            # exists): rerun the launch-token exchange and hand the minted
-            # cookie back with a redirect to the same path — the browser
-            # retries with the cookie in hand. When no exchange is possible,
-            # show the friendly interstitial; the harness's raw 401 body never
-            # reaches an uncookied browser. A browser that already sent the
-            # session cookie still gets the relayed upstream 401 (re-running
-            # the exchange for it could redirect-loop on revoked cookies).
-            return_to = cfg.chat_prefix + "/" + path
-            if sidecar.entry_url:
-                automatic = await _auto_exchange(cfg, sidecar, return_to=return_to)
-                if automatic is not None:
-                    return automatic
-            return _login_interstitial(cfg)
-        return Response(data, status_code=upstream_response.status_code,
-                        headers={k: v for k, v in upstream_response.headers.items()
-                                 # Response() recomputes length; content-encoding must go too:
-                                 # httpx already decoded the body (aread), forwarding the
-                                 # gzip/br header makes browsers fail with
-                                 # ERR_CONTENT_DECODING_FAILED
-                                 if k.lower() not in _HOP_HEADERS | {"content-length", "content-encoding"}})
+        return await _proxy_request_shared(cfg, sidecar, request, path)
 
     return router
+
+
+def create_chat_api_fallback(
+    sidecar: ChatUISidecar,
+    config: ChatUIConfig | None = None,
+    *,
+    ws_connect: Callable[[str], Coroutine[Any, Any, Any]] | None = None,
+) -> APIRouter:
+    """Root-absolute /api catch-all for the chat SPA (registered LAST).
+
+    The harness web client's compile-time API_PATH is '/api' (root-absolute,
+    packages/client/connection/src/api-path.ts), so the SPA served at /chat/
+    calls http://<daemon>/api/... and wss://<daemon>/api/remote.mux — NOT
+    /chat/api/.... The daemon must therefore forward unmatched /api paths to
+    the chat sidecar. This router is meant to be included after every daemon
+    route: Starlette matches in registration order, so all of the daemon's own
+    /api/* endpoints keep precedence and only the remainder falls through.
+    """
+    cfg = config or sidecar.cfg
+    router = APIRouter()
+
+    @router.websocket("/api/remote.mux")
+    async def api_remote_mux(websocket: WebSocket) -> None:
+        await _tunnel_ws(websocket, cfg, ws_connect)
+
+    @router.api_route("/api/{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
+    async def api_fallback(rest: str, request: Request) -> Response:
+        # No prefix strip: the harness owns /api at its root.
+        return await _proxy_request_shared(cfg, sidecar, request, "api/" + rest)
+
+    return router
+
+
+async def _proxy_request_shared(cfg: ChatUIConfig, sidecar: ChatUISidecar,
+                                request: Request, path: str) -> Response:
+    """Proxy core shared by the /chat router and the root /api fallback.
+
+    - forwards the browser's public Host (cookie audience + Origin fence),
+    - forwards the RAW query string (the /plugins/??combo keys must survive),
+    - intercepts a cold 401 with the launch-token exchange / interstitial.
+    """
+    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
+    headers["host"] = request.headers["host"]
+    client = httpx.AsyncClient(base_url=cfg.upstream_origin, timeout=httpx.Timeout(90.0))
+    body = await request.body() if request.method not in ("GET", "HEAD") else None
+    url = "/" + path
+    if request.url.query:
+        url += "?" + request.url.query
+    upstream_request = client.build_request(request.method, url, headers=headers, content=body)
+    try:
+        upstream_response = await client.send(upstream_request, stream=True)
+    except httpx.HTTPError:
+        await client.aclose()
+        return Response("ecoGPT chat is starting; retry in a moment.", status_code=503)
+    content_type = upstream_response.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        # Genuinely incremental: relay raw bytes as they arrive.
+        return StreamingResponse(
+            upstream_response.aiter_raw(),
+            status_code=upstream_response.status_code,
+            headers={k: v for k, v in upstream_response.headers.items() if k.lower() not in _HOP_HEADERS},
+            background=BackgroundTask(client.aclose),
+        )
+    # Bufferable JSON/etc: read fully, then close upstream deterministically.
+    data = await upstream_response.aread()
+    await upstream_response.aclose()
+    await client.aclose()
+    if upstream_response.status_code == 401 and not _has_harness_session(request, cfg):
+        # Auth wall hit (cold deep-link / SPA XHR before the session exists):
+        # rerun the launch-token exchange and hand the minted cookie back with
+        # a redirect to the same path — the browser retries with the cookie in
+        # hand. When no exchange is possible, show the friendly interstitial;
+        # the harness's raw 401 body never reaches an uncookied browser. A
+        # browser that already sent the session cookie still gets the relayed
+        # upstream 401 (re-running the exchange for it could redirect-loop on
+        # revoked cookies).
+        if sidecar.entry_url:
+            automatic = await _auto_exchange(cfg, sidecar, return_to=request.url.path)
+            if automatic is not None:
+                return automatic
+        return _login_interstitial(cfg)
+    return Response(data, status_code=upstream_response.status_code,
+                    headers={k: v for k, v in upstream_response.headers.items()
+                             # Response() recomputes length; content-encoding must go too:
+                             # httpx already decoded the body (aread), forwarding the
+                             # gzip/br header makes browsers fail with
+                             # ERR_CONTENT_DECODING_FAILED
+                             if k.lower() not in _HOP_HEADERS | {"content-length", "content-encoding"}})
+
+
+async def _tunnel_ws(websocket: WebSocket, cfg: ChatUIConfig,
+                     ws_connect: Callable[[str], Coroutine[Any, Any, Any]] | None) -> None:
+    """WebSocket tunnel core shared by /chat/api/remote.mux and /api/remote.mux."""
+    connector = ws_connect or _default_ws_connect
+    await websocket.accept()
+    upstream = await connector(cfg.upstream_origin + "/api/remote.mux")
+    pump_down = asyncio.create_task(_pump_ws(upstream, websocket))
+    pump_up = asyncio.create_task(_pump_ws_reverse(websocket, upstream))
+    done, _pending = await asyncio.wait({pump_down, pump_up}, return_when=asyncio.FIRST_COMPLETED)
+    for task in done:
+        if task.exception() is not None:
+            log.warning("chat-UI WS tunnel ended: %s", task.exception())
+    for task in (pump_down, pump_up):
+        task.cancel()
+    await websocket.close()
 
 
 def public_authority(cfg: ChatUIConfig) -> str:

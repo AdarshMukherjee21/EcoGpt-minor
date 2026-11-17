@@ -32,7 +32,7 @@ from . import model_cache
 from . import router_engine
 from . import router_settings
 from . import trace_view
-from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_router
+from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_api_fallback, create_chat_router
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -289,8 +289,9 @@ def create_app(
 
     app = FastAPI(title="ecoGPT Proxy", lifespan=lifespan)
     # Same-origin chat UI: /chat (prefix-stripping reverse proxy onto the
-    # dsh webserver at 127.0.0.1:3180; the harness client is document-relative,
-    # so its /api and WS calls resolve to /chat/api/... automatically).
+    # dsh webserver at 127.0.0.1:3180). The harness client's plugin/asset
+    # routes are document-relative (resolve under /chat/); its API_PATH is
+    # root-absolute '/api', handled by the catch-all included at the very end.
     chat_ui_sidecar = ChatUISidecar(ChatUIConfig())
     app.include_router(create_chat_router(chat_ui_sidecar, ChatUIConfig()))
 
@@ -2319,6 +2320,18 @@ def create_app(
             return await sidecar_client().stats()
         except (httpx.HTTPError, ValueError) as exc:
             return error_json(502, f"Sidecar stats unavailable: {exc}")
+
+    # Root-absolute /api catch-all for the chat SPA: the vendored harness
+    # client's API_PATH is '/api' (not document-relative), so its fetch/SSE
+    # calls and the /api/remote.mux WebSocket land on the daemon origin.
+    # Registered LAST — Starlette matches in registration order, so every
+    # daemon /api/* route above (state, settings, green, router, usage,
+    # sessions, trace, headroom, claude, desktop, gateway, features) keeps
+    # precedence and only unmatched /api paths fall through to the sidecar.
+    # Only mounted when the chat sidecar is managed (production boot); tests
+    # keep manage_chat_ui=False and therefore the old unmatched-404 behavior.
+    if manage_chat_ui:
+        app.include_router(create_chat_api_fallback(chat_ui_sidecar, ChatUIConfig()))
 
     return app
 

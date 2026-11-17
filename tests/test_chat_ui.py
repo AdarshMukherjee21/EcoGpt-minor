@@ -19,7 +19,7 @@ from fastapi import FastAPI
 from starlette.testclient import TestClient
 
 import proxy.chat_ui as chat_ui
-from proxy.chat_ui import ChatUIConfig, ChatUISidecar, create_chat_router
+from proxy.chat_ui import ChatUIConfig, ChatUISidecar, create_chat_api_fallback, create_chat_router
 
 
 def _app(router) -> FastAPI:
@@ -500,3 +500,105 @@ def test_buffered_proxy_response_strips_content_encoding() -> None:
         assert resp.content == plain  # decoded, browser-decodable as-is
     finally:
         chat_ui.httpx.AsyncClient = original
+
+
+# ---------------------------------------------------------------------------
+# /plugins combo URLs keep their RAW query (??id1/client.js,id2/client.js&rev=)
+# and the root-absolute /api catch-all forwards to the sidecar only when no
+# daemon route matched.
+# ---------------------------------------------------------------------------
+
+
+def test_proxy_forwards_raw_query_verbatim_for_plugin_combos() -> None:
+    """The harness combo URL is /plugins/??<ids>&rev=... — the module list is
+    the RAW query; re-encoding parsed params would %3F-encode the second '?'
+    and every plugin bundle request would 404 upstream."""
+    seen: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, json={"path": request.url.path, "url": str(request.url)})
+
+    sidecar = ChatUISidecar(ChatUIConfig())
+    sidecar.entry_url = "http://127.0.0.1:3180/?token=t"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(handler, *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, ChatUIConfig())))
+        response = client.get("/chat/plugins/??@a/client.js,@b/client.js&rev=abc",
+                              follow_redirects=False)
+        assert response.status_code == 200
+        # upstream must see the literal '??' combo key, not %3F
+        assert "/plugins/??" in seen[0], seen
+        assert response.json()["path"] == "/plugins/"
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_api_fallback_forwards_unmatched_api_but_daemon_routes_win() -> None:
+    """Root /api catch-all (harness API_PATH is root-absolute '/api'):
+    daemon-registered /api routes take precedence; only unmatched paths are
+    proxied to the chat sidecar."""
+    calls: List[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return httpx.Response(200, json={"upstream": request.url.path})
+
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=t"
+
+    app = FastAPI()
+
+    @app.get("/api/state")
+    async def daemon_state() -> dict:
+        return {"ours": True}
+
+    app.include_router(create_chat_api_fallback(sidecar, cfg))
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(handler, *a, **kw)
+    try:
+        client = TestClient(app)
+        ours = client.get("/api/state")
+        assert ours.status_code == 200 and ours.json() == {"ours": True}
+        assert calls == []  # never touched the sidecar
+
+        forwarded = client.get("/api/harness-thing")
+        assert forwarded.status_code == 200
+        assert forwarded.json() == {"upstream": "/api/harness-thing"}  # no prefix strip at root
+        assert calls == ["/api/harness-thing"]
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_api_fallback_tunnels_ws_mux_at_root() -> None:
+    received: List[str] = []
+
+    class _FakeUpstream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            while not received:
+                await asyncio.sleep(0.01)
+            return "echo:" + received.pop(0)
+
+        async def send(self, message: str) -> None:
+            received.append(message)
+
+    async def fake_connect(url: str) -> _FakeUpstream:
+        assert url == "http://127.0.0.1:3180/api/remote.mux"
+        return _FakeUpstream()
+
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=t"
+    app = FastAPI()
+    app.include_router(create_chat_api_fallback(sidecar, cfg, ws_connect=fake_connect))
+    client = TestClient(app)
+    with client.websocket_connect("/api/remote.mux") as ws:
+        ws.send_text("ping")
+        assert ws.receive_text() == "echo:ping"
