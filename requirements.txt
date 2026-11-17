@@ -4,3 +4,4 @@ httpx
 pytest
 headroom-ai[proxy]==0.44.0
 ecologits==0.10.2
+tiktoken>=0.8.0

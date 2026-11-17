@@ -56,6 +56,18 @@ MIGRATIONS = {
     "impact_provenance": "text",
     "ttft_ms": "integer",
     "tps": "real",
+    # System One tier router (per request, when the client used an auto model).
+    # Nullable: rows recorded before the router, with it disabled, or for
+    # non-routed models read as NULL.
+    "router_tier": "text",
+    "router_reason": "text",
+    "router_confidence": "real",
+    "router_target_model": "text",
+    "router_backend": "text",
+    "router_latency_ms": "integer",
+    "router_warm_applied": "integer not null default 0",
+    "router_sticky_applied": "integer not null default 0",
+    "router_fallback": "integer not null default 0",
 }
 
 
@@ -93,12 +105,14 @@ def record(
     impacts: dict[str, Any] | None = None,
     ttft_ms: int | None = None,
     tps: float | None = None,
+    router: dict[str, Any] | None = None,
 ) -> None:
     counts = normalize_anthropic_usage(usage)
     comp = compression or {}
     impacts = impacts or {}
     energy = impacts.get("energy_kwh") or {}
     gwp = impacts.get("gwp_kgco2e") or {}
+    router = router or {}
     with closing(sqlite3.connect(path)) as db, db:
         db.execute(
             "insert into usage (ts, model, route, stream, status, input_tokens, output_tokens, "
@@ -106,9 +120,11 @@ def record(
             "tokens_before, tokens_after, tokens_saved, session_source, session_replayed, attempts, "
             "fallback, turn_id, relayed, energy_kwh_mean, energy_kwh_min, energy_kwh_max, "
             "gwp_kgco2e_mean, gwp_kgco2e_min, gwp_kgco2e_max, model_basis, "
-            "water_l, adpe_kg_sbeq, primary_mj, impact_status, impact_provenance, ttft_ms, tps) "
+            "water_l, adpe_kg_sbeq, primary_mj, impact_status, impact_provenance, ttft_ms, tps, "
+            "router_tier, router_reason, router_confidence, router_target_model, router_backend, "
+            "router_latency_ms, router_warm_applied, router_sticky_applied, router_fallback) "
             "values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, "
-            "?, ?, ?, ?, ?, ?, ?)",
+            "?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 time.time(),
                 model,
@@ -145,6 +161,15 @@ def record(
                 impacts.get("impact_provenance"),
                 ttft_ms,
                 tps,
+                router.get("final_tier"),
+                router.get("routing_reason"),
+                router.get("confidence"),
+                router.get("target_model"),
+                router.get("backend"),
+                int(router.get("classify_latency_ms") or 0),
+                int(bool(router.get("warmth_applied"))),
+                int(bool(router.get("stickiness_applied"))),
+                int(bool(router.get("fallback_used"))),
             ),
         )
 

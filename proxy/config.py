@@ -9,6 +9,7 @@ from typing import Any
 from . import features as features_settings
 from . import green as green_settings
 from . import headroom_settings
+from . import router_settings
 from .routing import upstream_base
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
@@ -41,6 +42,15 @@ class Settings:
     headroom: dict[str, Any] = field(default_factory=headroom_settings.defaults)
     features: dict[str, Any] = field(default_factory=features_settings.defaults)
     green: dict[str, Any] = field(default_factory=green_settings.defaults)
+    # System One tier router: scalar settings (endpoint, warmth, guards) and the
+    # ordered tier ladder. api_key lives here and is masked in every view.
+    router: dict[str, Any] = field(default_factory=router_settings.defaults)
+    router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
+    # System One tier router: scalar settings + the ordered tier ladder
+    # ({"id", "description", "model"}). Tiers ride along in the same block; the
+    # classifier API key never leaves this dict (masked in every view).
+    router: dict[str, Any] = field(default_factory=router_settings.defaults)
+    router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
 
     def __post_init__(self) -> None:
         self.migrate_providers()
@@ -126,9 +136,31 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
             if key in {e["key"] for e in green_settings.GREEN_SCHEMA}
         }
         settings.green = green_settings.normalize(stored_green)
+        stored_router = {
+            key: value for key, value in dict(raw.get("router", {})).items()
+            if key in {e["key"] for e in router_settings.SCHEMA} and key != "tiers"
+        }
+        try:
+            settings.router = router_settings.normalize(stored_router)
+        except ValueError:
+            settings.router = router_settings.defaults()
+        if isinstance(raw.get("router"), dict):
+            stored_tiers = raw["router"].get("tiers")
+            if isinstance(stored_tiers, list) and stored_tiers:
+                try:
+                    settings.router_tiers = router_settings.normalize_tiers(stored_tiers)
+                except ValueError:
+                    settings.router_tiers = router_settings.default_tiers()
     return settings
 
 
 def save_settings(settings: Settings, path: Path = CONFIG_PATH) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
+    payload = asdict(settings)
+    # The tier ladder is stored nested INSIDE the router block (the request-time
+    # loader reads data/config.json's "router"."tiers"); asdict emits it as a
+    # sibling field, so re-nest before writing.
+    router = dict(payload.get("router") or {})
+    router["tiers"] = payload.pop("router_tiers", router_settings.default_tiers())
+    payload["router"] = router
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")

@@ -56,6 +56,39 @@ Config lives in `data/config.json` (editable live from the dashboard; the
 ablation harness may rewrite `features`/`green` between requests — dashboard
 saves respect on-disk changes).
 
+## Routing: System One tier router
+
+When a client selects an **auto model** (default id `eco-auto`), the request is
+classified by a **System One decision model** (Jev API: `POST <endpoint_url>`
+with `{model, state, questions}` returning `{answers: {difficulty: {choice,
+probabilities, confidence}}}`) and dispatched to the matching tier's model.
+
+- **Tier ladder** (user-configurable count 2–26, ordered easiest → most
+  capable): each tier has a `id`, a **prompt-kind description** (classifier
+  criteria text) and exactly **one model**. The shipped default ladder is
+  goldfish (executor) / elephant (planner) with descriptions from the chat
+  harness proposal; tiers, descriptions and models are editable in the Router
+  settings tab.
+- **Rules**: confidence-floor escalation (+1 tier when classification
+  confidence < 0.45), long-context floor (prompts over the 256k advertised
+  window jump to the long-context floor tier), **warmth hold** (no tier
+  downgrade within 120 s) and **cache stickiness** (borderline flips within
+  300 s stay on the previous tier so provider KV/prompt caches stay hot).
+  All toggles/Windows live in Router settings; warmth and stickiness are ON
+  by default.
+- **Generic endpoints**: the classifier is any well-formed SystemOne URL
+  (Ollama `/v1/systemone` and OpenRouter `/api/alpha/decisions` ship as
+  presets); credentials (bearer/x-api-key) are stored server-side in
+  `data/config.json` and never travel in request bodies or dashboard payloads.
+  Sending prompts to a **non-loopback** endpoint shows a persistent egress
+  notice in the dashboard.
+- **Traceability**: every routing decision is appended to the per-session JSONL
+  ledger (`data/sessions/`, DeepSeek-style) — requested auto model, chosen
+  tier, target model, confidence, routing reason, warmth/stickiness flags —
+  and to the usage DB (`router_tier`, `router_reason`, `router_target_model`,
+  `router_confidence`, ...), so dashboards and exports can show why each turn
+  was routed the way it was.
+
 ## Green metrics (Phase 2)
 
 Defaults are explicit scenarios, never inferred data. When the `green_metrics`

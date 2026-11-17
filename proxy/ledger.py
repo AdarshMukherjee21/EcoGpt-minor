@@ -356,7 +356,7 @@ def _sum_bound(objects: list[dict[str, Any]], path: tuple[str, ...]) -> dict[str
 
 
 def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
-    """Totals over one session's ledger: tokens, duration, compression, green, errors."""
+    """Totals over one session's ledger: tokens, duration, compression, green, router."""
     from datetime import datetime
 
     requests = errors = 0
@@ -427,6 +427,27 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
                 if isinstance(e["impacts"].get("impact_status"), str)
             }),
         }
+    # Router stage rollup (tier decisions across the session).
+    router = {"decisions": 0, "by_reason": {}, "by_tier": {},
+              "warmth_applied": 0, "stickiness_applied": 0, "escalations": 0,
+              "fallbacks": 0}
+    for entry in entries:
+        if entry.get("type") != "stage" or entry.get("feature") != "router":
+            continue
+        provenance = entry.get("provenance") or {}
+        router["decisions"] += 1
+        reason = str(provenance.get("routing_reason") or "unknown")
+        tier = str(provenance.get("final_tier") or "unknown")
+        router["by_reason"][reason] = router["by_reason"].get(reason, 0) + 1
+        router["by_tier"][tier] = router["by_tier"].get(tier, 0) + 1
+        if provenance.get("warmth_applied"):
+            router["warmth_applied"] += 1
+        if provenance.get("stickiness_applied"):
+            router["stickiness_applied"] += 1
+        if reason in ("confidence_escalation", "long_context_floor"):
+            router["escalations"] += 1
+        if provenance.get("fallback_used"):
+            router["fallbacks"] += 1
     return {
         "requests": requests,
         "models": {model: counts for model, counts in models.items() if counts and any(counts.values())},

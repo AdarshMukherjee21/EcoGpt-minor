@@ -6,8 +6,11 @@ import logging
 import re
 import time
 import uuid
+import datetime
+from datetime import timezone
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlsplit
@@ -26,6 +29,8 @@ from . import green_impact
 from . import headroom_settings
 from . import ledger
 from . import model_cache
+from . import router_engine
+from . import router_settings
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -41,6 +46,8 @@ from .config import (
     save_settings,
 )
 from .session_key import extract_session
+from .router_engine import RouterClassifier, ClassifierConfig, Decision, ClassifyError
+from . import router_engine as _router_engine
 from .sidecar import Sidecar
 from .sidecar_client import CompressError, Outcome, SidecarClient
 from .translate_request import to_responses_request
@@ -102,6 +109,18 @@ class HeadroomUpdate(BaseModel):
     values: dict[str, Any]
 
 
+class RouterUpdate(BaseModel):
+    """PUT /api/router body: scalar settings and/or the tier ladder."""
+
+    values: Optional[dict[str, Any]] = None
+    tiers: Optional[list[dict[str, Any]]] = None
+
+
+class RouterTestRequest(BaseModel):
+    prompt: str
+    system_prompt: Optional[str] = None
+
+
 class DesktopApply(BaseModel):
     base_url: Optional[str] = None
     api_key: Optional[str] = None
@@ -125,6 +144,12 @@ class RequestContext:
     session_key: str | None = None
     session_source: str | None = None
     upstream_model: str = ""
+    # Model through which provider pinning resolves (tier model for auto
+    # traffic; empty for non-routed requests). Kept separate from
+    # upstream_model, which is the effective upstream model *id*.
+    routing_model: str = ""
+    # Full decision record when this request was tier-routed (None otherwise).
+    router_decision: Optional[dict[str, Any]] = None
 
 
 def error_json(status: int, message: str, kind: str = "api_error") -> JSONResponse:
@@ -173,6 +198,7 @@ def create_app(
     sidecar_log_path: Path = SIDECAR_LOG_PATH,
     estimation_path: Optional[Path] = None,
     estimation_transport: httpx.AsyncBaseTransport | None = None,
+    router_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     settings = load_settings(settings_path)
     estimation_path = Path(estimation_path or green_estimation.ESTIMATION_STATE_PATH)
@@ -180,6 +206,11 @@ def create_app(
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0), transport=upstream_transport)
     sidecar = Sidecar(sidecar_log_path)
     state: dict[str, Any] = {"sidecar_client": None, "gateway_meta": {"ts": 0.0, "models": {}}}
+    # Router: shared classifier client + per-session warmth map. The classifier
+    # is (re)built lazily from the request-time router settings; configuration
+    # edits through PUT /api/router rebuild it in place.
+    state["router_warmth"]: dict[str, dict[str, Any]] = {}
+    state["router_classifier_config"]: ClassifierConfig | None = None
     _background_tasks: set["asyncio.Task[None]"] = set()
 
     def build_sidecar_client() -> SidecarClient:
@@ -275,6 +306,11 @@ def create_app(
     def check_exposed(model: str) -> JSONResponse | None:
         if model in settings.exposed_models:
             return None
+        # The auto model is exposed only when the router is fully set up:
+        # enabled, valid ladder (every tier has a model).
+        if router_settings_current() and model and router_settings.is_auto_model(
+                router_settings_current(), model) and router_auto_offered():
+            return None
         return error_json(
             404,
             f"Model '{model}' is not exposed by the proxy. Enable it in the dashboard at "
@@ -295,6 +331,7 @@ def create_app(
         impacts: dict[str, Any] | None = None,
         ttft_ms: float | None = None,
         tps: float | None = None,
+        router: Optional[dict[str, Any]] = None,
     ) -> None:
         usage_log.record(
             db_path,
@@ -309,6 +346,7 @@ def create_app(
             impacts=impacts,
             ttft_ms=int(ttft_ms) if ttft_ms is not None else None,
             tps=tps,
+            router=router,
         )
 
     # --- Ledger observers (tracing flag gated; every write fails open) ---------------
@@ -379,6 +417,9 @@ def create_app(
             settings.features = features_settings.load_features(settings_path)
         if "green" not in keep:
             settings.green = _green_settings_from_disk()
+        if "router" not in keep:
+            settings.router = router_settings.load_router(settings_path)
+            settings.router_tiers = router_settings.load_tiers(settings_path)
         save_settings(settings, settings_path)
 
     def _green_settings_from_disk() -> dict[str, Any]:
@@ -466,7 +507,7 @@ def create_app(
         tps = impacts.get("tps") if isinstance(impacts, dict) else None
         log_usage(model=ctx.model, route=route, stream=stream, status=status, usage=usage,
                   cost=cost, duration_ms=duration_ms, compression=record, impacts=impacts,
-                  ttft_ms=ttft_ms, tps=tps)
+                  ttft_ms=ttft_ms, tps=tps, router=ctx.router_decision)
         if ctx.features["tracing"]:
             ledger.response_event(
                 ledger_dir,
@@ -569,6 +610,207 @@ def create_app(
         ledger_stage(ctx, record, duration_ms)
         return record, outcome
 
+    # --- Router stage (System One tier routing) -----------------------------------
+    #
+    # Runs between compression and dispatch, ONLY for requests to an auto
+    # model. All router settings are read from config.json at request time
+    # (load_router/load_tiers), so Router-tab edits take effect immediately;
+    # the shared classifier client is rebuilt whenever the endpoint identity
+    # changes. Warmth state lives in state["router_warmth"], keyed by session.
+
+    def router_settings_current() -> dict[str, Any]:
+        return router_settings.load_router(settings_path)
+
+    def router_tiers_current() -> list[dict[str, Any]]:
+        return router_settings.load_tiers(settings_path)
+
+    def router_active_now() -> bool:
+        """Router enabled AND fully set up (every tier has a model)."""
+        values = router_settings_current()
+        tiers = router_tiers_current()
+        if not values.get("enabled"):
+            return False
+        return not router_settings.block_is_valid(values, tiers)
+
+    def rebuild_router_client() -> RouterClassifier:
+        config = ClassifierConfig.from_values(router_settings_current())
+        old = state.get("router_classifier")
+        state["router_classifier"] = RouterClassifier(config, transport=router_transport)
+        if old is not None:
+            state["_router_classifier_fingerprint"] = old.config.fingerprint()
+        return state["router_classifier"]
+
+    def router_classifier() -> RouterClassifier:
+        """The shared classifier, rebuilt when the endpoint identity changes."""
+        config = ClassifierConfig.from_values(router_settings_current())
+        if state.get("_router_classifier_fingerprint") != config.fingerprint() or \
+                state.get("router_classifier") is None:
+            rebuild_router_client()
+        return state["router_classifier"]
+
+    def warmth_state_for(session_key: str | None) -> dict[str, Any]:
+        key = session_key or ledger.NO_SESSION_KEY
+        warmth = state["router_warmth"].get(key)
+        if warmth is None:
+            warmth = {"tier_idx": None, "model": "", "ts": None, "wall": None,
+                      "seeded": False}
+            state["router_warmth"][key] = warmth
+        return warmth
+
+    def seed_warmth_from_ledger(ctx: RequestContext) -> None:
+        """One-time per-request warmth seed from the session ledger.
+
+        Only consulted when the in-memory map has no entry for this session
+        (proxy restarted since the last auto-model turn); namespaced so
+        subagent/parent keys stay separate.
+        """
+        warmth = warmth_state_for(ctx.session_key)
+        if warmth.get("seeded"):
+            return
+        seeded = router_engine.warmth_from_ledger(ledger_dir, ctx.session_key,
+                                                  router_tiers_current())
+        if seeded is not None:
+            warmth.update(seeded)
+        warmth["seeded"] = True
+
+    async def router_stage(ctx: RequestContext) -> Optional[dict[str, Any]]:
+        """Classify + apply rules for auto-model requests. Returns the decision.
+
+        Never mutates ctx.body; a decided tier is applied by the caller through
+        ctx.upstream_model / ctx.route before dispatch. Raises nothing: every
+        failure path returns an error JSONResponse instead (the request is
+        served by the failure posture, not broken).
+        """
+        started_all = time.monotonic()
+        if not router_active_now():
+            return None
+        warmth_state = warmth_state_for(ctx.session_key)
+        seed_warmth_from_ledger(ctx)
+        recorded = await router_classify(ctx, warmth_state, started_all)
+        # Success: the tier is applied to ctx (route/upstream_model set inside
+        # router_classify); dispatch continues below. Returning the decision
+        # here would leak it as the HTTP response instead of the message.
+        return None
+
+    async def router_classify(ctx: RequestContext, warmth_state: dict[str, Any],
+                              started_all: float) -> Optional[Decision]:
+        tiers = router_tiers_current()
+        if not tiers:
+            return None
+        model = ctx.model
+        values = router_settings_current()
+        tier_ids = [str(t["id"]) for t in tiers]
+        criteria = {t["id"]: t["description"] for t in tiers}
+        system_prompt, user_prompt = router_engine.build_prompts(ctx.body)
+        state_text = router_engine.build_state(system_prompt, user_prompt,
+                                               int(values["state_token_budget"]))
+        classifier = router_classifier()
+        warmth = None
+        if warmth_state.get("tier_idx") is not None:
+            warmth = dict(warmth_state)
+        elif ctx.session_key:
+            seed = router_engine.warmth_from_ledger(ledger_dir, ctx.session_key, tiers)
+            if seed is not None:
+                warmth = dict(seed)
+                warmth_state.update(seed)
+        started = time.monotonic()
+        try:
+            answer = await classifier.classify(state_text, criteria,
+                                               str(values["routing_question"]))
+        except ClassifyError as exc:
+            duration_ms = (time.monotonic() - started) * 1000.0
+            record = router_engine.Decision(
+                endpoint=classifier.config.endpoint_url,
+                router_model=classifier.config.router_model,
+                raw_choice="",
+                routing_reason="classify_failed",
+                full_prompt_tokens=router_engine.estimate_tokens(
+                    json.dumps(ctx.body.get("messages") or [])),
+                state_tokens=0,
+                duration_ms=duration_ms,
+                fallback_used=True,
+                fallback_reason=str(exc.reason),
+            )
+            ledger_stage_router(ctx, record, duration_ms, error_message=exc.reason)
+            ctx.router_decision = record.record()
+            return None
+        full_prompt_tokens = record_prompt_tokens(ctx)
+        results = router_engine.apply_rules(
+            answer=answer, tiers=tiers, values=values,
+            full_prompt_tokens=full_prompt_tokens, warmth=warmth)
+        idx = results["final_idx"]
+        reason = results["routing_reason"]
+        warm = bool(results["warmth_applied"])
+        sticky = bool(results["stickiness_applied"])
+        confidence = float(results["confidence"])
+        probabilities = dict(results["probabilities"])
+        decision = router_engine.Decision(
+            endpoint=classifier.config.endpoint_url,
+            router_model=classifier.config.router_model,
+            final_tier=str(tiers[idx]["id"]),
+            target_model=str(tiers[idx]["model"]),
+            raw_choice=answer.get("choice", ""),
+            routing_reason=reason,
+            warmth_applied=warm,
+            stickiness_applied=sticky,
+            confidence=confidence,
+            probabilities=probabilities,
+            full_prompt_tokens=full_prompt_tokens,
+            state_tokens=router_engine.estimate_tokens(state_text),
+            router_input_tokens=int((answer.get("_usage") or {}).get("input_tokens") or 0),
+            router_output_tokens=int((answer.get("_usage") or {}).get("output_tokens") or 1),
+            classify_latency_ms=float(answer.get("_latency_ms") or 0.0),
+            duration_ms=(time.monotonic() - started_all) * 1000.0,
+        )
+        ledger_stage_router(ctx, decision, decision.duration_ms)
+        warmth_state.update({
+            "ts": time.monotonic(),
+            "wall": datetime.datetime.now(timezone.utc).isoformat(),
+            "tier_idx": idx,
+            "model": tiers[idx]["model"],
+            "seeded": True,
+        })
+        # Apply the decided tier to the context: the dispatchers read
+        # upstream_model / route from ctx after this stage returns, and the
+        # observers (usage DB, ledger) read the decision record.
+        tier = tiers[idx]
+        ctx.router_decision = decision.record()
+        ctx.upstream_model = settings.model_overrides.get(tier["model"], tier["model"])
+        ctx.route = settings.route_overrides.get(tier["model"],
+                                                 route_for(tier["model"], settings.route_overrides))
+        ctx.body["model"] = ctx.upstream_model
+        return decision
+
+    def record_prompt_tokens(ctx: RequestContext) -> int:
+        system_prompt, user_prompt = router_engine.build_prompts(ctx.body)
+        return router_engine.estimate_tokens(system_prompt) + router_engine.estimate_tokens(user_prompt)
+
+    def ledger_stage_router(ctx: RequestContext, decision: router_engine.Decision,
+                            duration_ms: float, *, error_message: str | None = None) -> None:
+        if not ctx.features["tracing"]:
+            return
+        provenance = dict(decision.record())
+        if error_message:
+            ledger.error_event(
+                ledger_dir,
+                session_key=ctx.session_key,
+                session_source=ctx.session_source,
+                request_id=ctx.request_id,
+                run_label=ctx.features["run_label"],
+                stage="router",
+                message=error_message[:1000],
+            )
+            return
+        ledger.stage_event(
+            ledger_dir,
+            session_key=ctx.session_key,
+            session_source=ctx.session_source,
+            request_id=ctx.request_id,
+            run_label=ctx.features["run_label"],
+            feature="router",
+            provenance=provenance,
+        )
+
     def schedule_relay(record: dict[str, Any], *, status: int, latency_ms: float, usage: dict[str, Any]) -> None:
         turn_id = record.get("turn_id")
         if not turn_id or not settings.headroom["relay_usage"] or not record.get("relay_pending"):
@@ -595,7 +837,7 @@ def create_app(
             usage_log.mark_relayed(db_path, turn_id)
 
     async def passthrough(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
-        provider = settings.provider_for(ctx.model)
+        provider = settings.provider_for(ctx.routing_model or ctx.model)
         url = f"{base(provider)}/v1/messages"
         headers = upstream_headers(request, passthrough=True, provider=provider)
         stream = ctx.stream
@@ -644,7 +886,7 @@ def create_app(
         return StreamingResponse(relay(), status_code=resp.status_code, media_type=media)
 
     async def via_responses(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
-        provider = settings.provider_for(ctx.model)
+        provider = settings.provider_for(ctx.routing_model or ctx.model)
         upstream_body = to_responses_request(ctx.body, ctx.upstream_model)
         url = f"{base(provider)}/v1/responses"
         headers = upstream_headers(request, passthrough=False, provider=provider)
@@ -716,7 +958,7 @@ def create_app(
 
     async def via_chat(request: Request, ctx: RequestContext, record: dict[str, Any], outcome: Outcome | None) -> Response:
         """Messages -> Chat Completions upstream, CC response/SS back to Messages."""
-        provider = settings.provider_for(ctx.model)
+        provider = settings.provider_for(ctx.routing_model or ctx.model)
         upstream_body = to_chat_completions_request(ctx.body, ctx.upstream_model)
         url = f"{base(provider)}/v1/chat/completions"
         headers = upstream_headers(request, passthrough=False, provider=provider)
@@ -797,6 +1039,21 @@ def create_app(
         body["model"] = model
         ctx = build_context(request, body)
 
+        # Oversized-context guard (plan §5): auto-model requests estimated over
+        # the advertised 256k window are rejected unless the experimental flag
+        # is on. Regular models are never gated by this.
+        rcfg = router_settings_current()
+        if ctx.model == str(rcfg.get("auto_model_id") or "") and not bool(rcfg.get("allow_oversized_context")):
+            tokens = router_engine.estimate_tokens(json.dumps(body.get("messages") or []))
+            if tokens > router_settings.ADVERTISED_CONTEXT_TOKENS:
+                return error_json(
+                    400,
+                    f"Prompt exceeds the advertised {router_settings.ADVERTISED_CONTEXT_TOKENS // 1000}k token "
+                    f"context for '{model}'. Enable 'Allow oversized contexts' in the Router settings "
+                    "or select a specific model.",
+                    "invalid_request_error",
+                )
+
         ledger_request(ctx)
         try:
             record, outcome = await compression_stage(ctx)
@@ -806,6 +1063,13 @@ def create_app(
                 503,
                 f"Headroom sidecar unavailable after {failed.inner.attempts} attempts: {failed.inner.reason}",
             )
+        # Router stage: only runs when the client selected an auto model and
+        # the router block is fully set up. A decided tier replaces the
+        # model/route on the context before dispatch; errors never break the
+        # request (the failure posture serves it instead).
+        router_error = await router_stage(ctx)
+        if router_error is not None:
+            return router_error
         # Model aliasing: forward under the effective upstream model id. The
         # ledger has already recorded the request under the client-facing name.
         if ctx.upstream_model != ctx.model:
@@ -846,7 +1110,10 @@ def create_app(
             return blocked
         body["model"] = model
         route = route_for(model, settings.route_overrides)
-        if route in (ROUTE_RESPONSES, ROUTE_CHAT):
+        auto_id = str(router_settings_current().get("auto_model_id") or "")
+        if model == auto_id or route in (ROUTE_RESPONSES, ROUTE_CHAT):
+            # Auto model (and any translated-route model): count locally,
+            # never forwarding to a provider.
             return JSONResponse({"input_tokens": max(1, len(json.dumps(body)) // 4)})
         provider = settings.provider_for(model)
         resp = await client.post(
@@ -924,17 +1191,40 @@ def create_app(
         # Desktop alias ids never surface in model discovery; the picker is
         # seeded with alias entries whose *labels* carry the display names.
         ids = visible_exposed_models()
+        # The auto model joins model discovery when the router is set up:
+        # valid ladder (every tier has a model), master toggle on.
+        if router_auto_offered():
+            ids.append(str(router_settings_current()["auto_model_id"]))
         if after_id and after_id in ids:
             ids = ids[ids.index(after_id) + 1:]
         if isinstance(limit, int) and limit >= 0:
             ids = ids[:limit]
         data = [model_row(m, meta) for m in ids]
+        if ids and data:
+            # Auto row advertises the 256k context (plan §5).
+            for row, model_id in zip(data, ids):
+                if model_id == str(router_settings_current().get("auto_model_id") or ""):
+                    row["display_name"] = row.get("display_name") or \
+                        f"ecoGPT Auto ({' → '.join(t['id'] for t in router_tiers_current())})"
+                    row["max_input_tokens"] = router_settings.ADVERTISED_CONTEXT_TOKENS
+                    row["description"] = (
+                        "Difficulty-tier routed: requests are classified and sent to the "
+                        "tier's model. Warmth keeps providers' caches hot; contexts over "
+                        "the advertised window are gated behind the experimental flag.")
         return {
             "data": data,
             "has_more": False,
             "first_id": data[0]["id"] if data else None,
             "last_id": data[-1]["id"] if data else None,
         }
+
+    def router_auto_offered() -> bool:
+        """Auto model is offered when the router master toggle is on AND the
+        ladder is fully set up (every tier has a model assigned)."""
+        if not bool(router_settings_current().get("enabled")):
+            return False
+        return not router_settings.block_is_valid(
+            router_settings_current(), router_tiers_current())
 
     def openai_error(status_code: int, message: str, kind: str = "api_error") -> JSONResponse:
         return JSONResponse({"error": {"message": message, "type": kind, "param": None, "code": kind}},
@@ -1693,6 +1983,135 @@ def create_app(
             return error_json(400, str(exc), "invalid_request_error")
         return desktop_state()
 
+
+    @app.get("/api/router")
+    async def router_view():
+        values = router_settings_current()
+        tiers = router_tiers_current()
+        problems = router_settings.block_is_valid(values, tiers)
+        # The stored classifier key never leaves the server: mask it the same
+        # way provider keys are masked in /api/state.
+        return {
+            "schema": router_settings.SCHEMA,
+            "values": {**values, "api_key": None, "api_key_set": bool(values.get("api_key"))},
+            "tiers": tiers,
+            "presets": router_settings.PRESETS,
+            "validity": {"valid": not problems, "problems": problems},
+            "local_endpoint": router_settings.is_local_endpoint(str(values.get("endpoint_url") or "")),
+            "auto_offered": router_auto_offered(),
+        }
+
+    @app.put("/api/router")
+    async def router_update(update: RouterUpdate):
+        current_values = router_settings_current()
+        current_tiers = router_tiers_current()
+        previous_fingerprint = ClassifierConfig.from_values(current_values).fingerprint()
+        merged_values = dict(current_values)
+        merged_tiers = list(current_tiers)
+        problems: list[str] = []
+        if update.values is not None:
+            merged_values.update(update.values)  # never accepts api_key: restored below
+            merged_values["api_key"] = current_values.get("api_key") or ""
+            try:
+                merged_values = router_settings.normalize(merged_values)
+            except ValueError as exc:
+                return error_json(400, str(exc), "invalid_request_error")
+            problems.extend(router_settings.block_is_valid(merged_values, merged_tiers))
+        if update.tiers is not None:
+            try:
+                merged_tiers = router_settings.normalize_tiers(update.tiers)
+            except ValueError as exc:
+                return error_json(400, str(exc), "invalid_request_error")
+            problems.extend(router_settings.validate_tiers(merged_tiers))
+        settings.router = merged_values
+        settings.router_tiers = merged_tiers
+        new_fingerprint = ClassifierConfig.from_values(merged_values).fingerprint()
+        if previous_fingerprint != new_fingerprint:
+            await state["router_classifier"].aclose()
+            state["router_classifier"] = RouterClassifier(
+                ClassifierConfig.from_values(merged_values), transport=router_transport)
+            state["_router_classifier_fingerprint"] = new_fingerprint
+        # Tier indices are positional: a changed ladder invalidates warmth.
+        state["router_warmth"].clear()
+        persist_settings(keep={"router"})
+        return {"ok": True, "validity": {"valid": not problems, "problems": problems}}
+
+    @dataclass
+    class _TestRouteContext:
+        """Minimal RequestContext stand-in for /api/router/test round trips."""
+
+        request_id: str = ""
+        requested_model: str = "router-test"
+        model: str = "router-test"
+        route: str = ""
+        stream: bool = False
+        features: dict[str, Any] = field(default_factory=lambda: {"tracing": True, "run_label": ""})
+        session_key: str | None = None
+        session_source: str | None = None
+        upstream_model: str = ""
+        routing_model: str = ""
+        router_decision: dict[str, Any] | None = None
+
+    class _DummyContext(_TestRouteContext):
+        pass
+
+    @app.post("/api/router/test")
+    async def router_test(test: RouterTestRequest):
+        values = router_settings_current()
+        tiers = router_tiers_current()
+        problems = router_settings.block_is_valid(values, tiers)
+        if problems:
+            return error_json(400, "router incomplete: " + "; ".join(problems), "invalid_request_error")
+        if not values.get("enabled"):
+            return error_json(400, "router is disabled", "invalid_request_error")
+        prompt_text = (test.system_prompt or "") + "\n" + test.prompt
+        full_prompt_tokens = estimate_tokens(prompt_text)
+        warmth = warmth_state_for(None)
+        if warmth is not None and warmth.get("seeded"):
+            warmth = None  # seeded on a previous request; classify fresh
+        classifier = router_classifier()
+        criteria = {t["id"]: t["description"] for t in tiers}
+        state_text = build_state(
+            *(router_engine.build_prompts({"messages": [{"role": "user", "content": test.prompt}]})),
+            int(values["state_token_budget"]))
+        started_all = time.monotonic()
+        try:
+            answer = await classifier.classify(state_text, criteria, str(values["routing_question"]))
+        except ClassifyError as exc:
+            decision = router_engine.Decision(
+                endpoint=classifier.config.endpoint_url,
+                router_model=classifier.config.router_model,
+                raw_choice="",
+                routing_reason="classify_failed",
+                full_prompt_tokens=full_prompt_tokens,
+                state_tokens=estimate_tokens(state_text),
+                duration_ms=(time.monotonic() - started_all) * 1000.0,
+                fallback_used=True,
+                fallback_reason=str(exc.reason)[:500],
+            )
+            ledger_stage_router(_TestRouteContext(request_id=str(uuid.uuid4())), decision, decision.duration_ms,
+                                error_message=exc.reason[:500])
+            return error_json(502, f"classifier unreachable: {exc.reason}", "api_error")
+        results = router_engine.apply_rules(
+            answer=answer, tiers=tiers, values=values,
+            full_prompt_tokens=full_prompt_tokens, warmth=warmth)
+        decision = router_engine.Decision(
+            endpoint=classifier.config.endpoint_url,
+            router_model=classifier.config.router_model,
+            raw_choice=str(answer.get("choice") or ""),
+            routing_reason=str(results["routing_reason"]),
+            warmth_applied=bool(results["warmth_applied"]),
+            stickiness_applied=bool(results["stickiness_applied"]),
+            confidence=float(results["confidence"]),
+            probabilities=dict(results["probabilities"]),
+            full_prompt_tokens=full_prompt_tokens,
+            state_tokens=estimate_tokens(state_text),
+            router_input_tokens=int((answer.get("_usage") or {}).get("input_tokens") or 0),
+            router_output_tokens=int((answer.get("_usage") or {}).get("output_tokens") or 1),
+            classify_latency_ms=float(answer.get("_latency_ms") or 0.0),
+            duration_ms=(time.monotonic() - started_all) * 1000.0,
+        )
+        return {"ok": True, "decision": decision.record(), "answer": answer}
 
     @app.get("/api/usage")
     async def usage_rows(limit: int = 50):
