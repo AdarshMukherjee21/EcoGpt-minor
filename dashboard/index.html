@@ -647,6 +647,9 @@ function fieldHtml(entry, value) {
       `<option value="${esc(c)}" ${c === value ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>`;
   } else if (entry.type === "int" || entry.type === "float") {
     input = `<input type="number" id="${id}" data-key="${entry.key}" value="${value ?? ""}">`;
+  } else if (entry.key === "api_key") {
+    input = `<input type="password" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}"
+      placeholder="${value && value.api_key_set ? "(saved — leave blank to keep)" : "API key"}" autocomplete="off">`;
   } else {
     input = `<input type="text" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}">`;
   }
@@ -1114,7 +1117,9 @@ function setMsg(id, text, ok) { const el = $(id); el.textContent = text; el.clas
 $("router-save").onclick = async () => {
   try {
     const values = readForm("router-endpoint-form");
-    const result = await api("/api/router", { method: "PUT", body: JSON.stringify({ values }) });
+    const body = { values };
+    if (routerData && Array.isArray(routerData.tiers)) body.tiers = routerData.tiers;
+    const result = await api("/api/router", { method: "PUT", body: JSON.stringify(body) });
     const problems = (result.validity && result.validity.problems) || [];
     setMsg("router-msg", problems.length ? `Saved with warnings: ${problems.join("; ")}` : "Saved", true);
     routerData = await api("/api/router");
