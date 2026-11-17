@@ -31,6 +31,7 @@ from . import ledger
 from . import model_cache
 from . import router_engine
 from . import router_settings
+from . import trace_view
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -143,6 +144,9 @@ class RequestContext:
     features: dict[str, Any]
     session_key: str | None = None
     session_source: str | None = None
+    # Monotonic anchor for the round trip's trace timeline (ledger v2
+    # t0_offset_ms). 0.0 means "never stamped" -> ledger events carry no offset.
+    t0: float = 0.0
     upstream_model: str = ""
     # Model through which provider pinning resolves (tier model for auto
     # traffic; empty for non-routed requests). Kept separate from
@@ -351,6 +355,10 @@ def create_app(
 
     # --- Ledger observers (tracing flag gated; every write fails open) ---------------
 
+    def _t0_offset(ctx: RequestContext) -> float | None:
+        """Milliseconds since the round trip arrived (timeline anchor offset)."""
+        return (time.monotonic() - ctx.t0) * 1000.0 if ctx.t0 else None
+
     def ledger_request(ctx: RequestContext) -> None:
         if not ctx.features["tracing"]:
             return
@@ -366,6 +374,7 @@ def create_app(
             stream=ctx.stream,
             body=ctx.body,
             upstream_model=ctx.upstream_model,
+            t0_offset_ms=_t0_offset(ctx) or 0,
         )
 
     def ledger_stage(ctx: RequestContext, record: dict[str, Any], duration_ms: float, *, error_message: str | None = None) -> None:
@@ -381,6 +390,7 @@ def create_app(
             run_label=ctx.features["run_label"],
             feature="compression",
             provenance=provenance,
+            t0_offset_ms=_t0_offset(ctx),
         )
         if error_message:
             ledger.error_event(
@@ -391,6 +401,7 @@ def create_app(
                 run_label=ctx.features["run_label"],
                 stage="compression",
                 message=error_message,
+                t0_offset_ms=_t0_offset(ctx),
             )
 
     def ledger_error(ctx: RequestContext, stage: str, message: str) -> None:
@@ -404,6 +415,7 @@ def create_app(
             run_label=ctx.features["run_label"],
             stage=stage,
             message=message,
+            t0_offset_ms=_t0_offset(ctx),
         )
 
     def persist_settings(*, keep: set[str] = frozenset()) -> None:
@@ -501,6 +513,7 @@ def create_app(
         stop_reason: str | None = None,
         content: Any = None,
         ttft_ms: float | None = None,
+        chunk_count: int | None = None,
     ) -> None:
         """Log the usage row, write the ledger response event, and schedule the sidecar relay."""
         impacts = compute_impacts(ctx, usage, duration_ms=duration_ms, ttft_ms=ttft_ms)
@@ -521,6 +534,12 @@ def create_app(
                 stop_reason=stop_reason,
                 content=content,
                 impacts=impacts,
+                model_served=ctx.upstream_model or ctx.model,
+                route=route,
+                ttft_ms=ttft_ms,
+                tps=tps,
+                chunk_count=chunk_count,
+                t0_offset_ms=_t0_offset(ctx),
             )
         schedule_relay(record, status=status, latency_ms=duration_ms, usage=usage or {})
 
@@ -536,6 +555,9 @@ def create_app(
                 status=status,
                 duration_ms=duration_ms,
                 usage=None,
+                model_served=ctx.upstream_model or ctx.model,
+                route=ctx.route,
+                t0_offset_ms=_t0_offset(ctx),
             )
         schedule_relay(record, status=status, latency_ms=duration_ms, usage={})
 
@@ -553,6 +575,12 @@ def create_app(
             "fallback": fallback,
             "turn_id": outcome.turn_id,
             "relayed": False,
+            # Trace detail (ledger v2): the sidecar's own transforms decide the
+            # compaction "mode" shown in the trace, and roundtrip_ms is the
+            # sidecar HTTP call alone (vs the stage's total duration_ms).
+            "transforms": list(outcome.transforms),
+            "mode": _compression_mode(outcome),
+            "roundtrip_ms": round(float(outcome.roundtrip_ms or 0.0), 2) or None,
         }
 
     def extract_identity(request: Request, ctx: RequestContext) -> None:
@@ -604,9 +632,14 @@ def create_app(
             record = compression_record(None, fallback=f"forwarded_original: {exc.reason}", attempts=exc.attempts)
             ledger_stage(ctx, record, duration_ms, error_message=exc.reason)
             return record, None
+        bytes_before = ledger.chars_of(ctx.body)
         duration_ms = int((time.monotonic() - started) * 1000)
         ctx.body = outcome.body
         record = compression_record(outcome, fallback=None, attempts=outcome.attempts)
+        # Byte-size fingerprints of the compaction: canonical serialization char
+        # counts (metadata only, matching the ledger's hash/chars profile).
+        record["bytes_before"] = bytes_before
+        record["bytes_after"] = ledger.chars_of(outcome.body)
         ledger_stage(ctx, record, duration_ms)
         return record, outcome
 
@@ -762,7 +795,6 @@ def create_app(
             classify_latency_ms=float(answer.get("_latency_ms") or 0.0),
             duration_ms=(time.monotonic() - started_all) * 1000.0,
         )
-        ledger_stage_router(ctx, decision, decision.duration_ms)
         warmth_state.update({
             "ts": time.monotonic(),
             "wall": datetime.datetime.now(timezone.utc).isoformat(),
@@ -772,12 +804,16 @@ def create_app(
         })
         # Apply the decided tier to the context: the dispatchers read
         # upstream_model / route from ctx after this stage returns, and the
-        # observers (usage DB, ledger) read the decision record.
+        # observers (usage DB, ledger) read the decision record. The dispatch
+        # values are stamped onto the decision BEFORE it is ledgered.
         tier = tiers[idx]
-        ctx.router_decision = decision.record()
         ctx.upstream_model = settings.model_overrides.get(tier["model"], tier["model"])
         ctx.route = settings.route_overrides.get(tier["model"],
                                                  route_for(tier["model"], settings.route_overrides))
+        decision.dispatch_route = ctx.route
+        decision.tier_model_alias = ctx.upstream_model != tier["model"]
+        ctx.router_decision = decision.record()
+        ledger_stage_router(ctx, decision, decision.duration_ms)
         ctx.body["model"] = ctx.upstream_model
         return decision
 
@@ -799,6 +835,7 @@ def create_app(
                 run_label=ctx.features["run_label"],
                 stage="router",
                 message=error_message[:1000],
+                t0_offset_ms=_t0_offset(ctx),
             )
             return
         ledger.stage_event(
@@ -809,6 +846,7 @@ def create_app(
             run_label=ctx.features["run_label"],
             feature="router",
             provenance=provenance,
+            t0_offset_ms=_t0_offset(ctx),
         )
 
     def schedule_relay(record: dict[str, Any], *, status: int, latency_ms: float, usage: dict[str, Any]) -> None:
@@ -881,7 +919,8 @@ def create_app(
                                  usage=tracker.usage, cost=header_cost(resp.headers),
                                  duration_ms=(time.monotonic() - started) * 1000,
                                  stop_reason=tracker.stop_reason,
-                                 ttft_ms=tracker.ttft_ms(started))
+                                 ttft_ms=tracker.ttft_ms(started),
+                                 chunk_count=tracker.chunk_count)
 
         return StreamingResponse(relay(), status_code=resp.status_code, media_type=media)
 
@@ -1092,6 +1131,7 @@ def create_app(
             body=body,
             features=flags,
             upstream_model=settings.model_overrides.get(model, model),
+            t0=time.monotonic(),
         )
         extract_identity(request, ctx)
         return ctx
@@ -1867,6 +1907,41 @@ def create_app(
                 "session_source": session.get("session_source"),
                 "run_label": session.get("run_label"), **session.get("summary", {})}
 
+    # -- trace endpoints (trajectory-style timeline/read API; feature-gated) --
+
+    def _tracing_enabled() -> bool:
+        try:
+            return bool(features_settings.load_features(settings_path)["tracing"])
+        except Exception:
+            return False
+
+    @app.get("/api/trace/calls")
+    async def trace_calls(limit: int = 100, offset: int = 0, session: str | None = None):
+        if not _tracing_enabled():
+            return error_json(404, "tracing is disabled", "not_found_error")
+        limit = max(1, min(limit, 500))
+        offset = max(0, offset)
+        rows, total = trace_view.recent_calls(ledger_dir, limit, offset, session_filter=session)
+        return {"total": total, "calls": rows}
+
+    @app.get("/api/trace/calls/{key}/{request_id}")
+    async def trace_call_detail(key: str, request_id: str):
+        if not _tracing_enabled():
+            return error_json(404, "tracing is disabled", "not_found_error")
+        detail = trace_view.call_detail(ledger_dir, key, request_id)
+        if detail is None:
+            return error_json(404, "Call not found", "not_found_error")
+        return detail
+
+    @app.get("/api/sessions/{key}/timeline")
+    async def session_timeline(key: str):
+        if not _tracing_enabled():
+            return error_json(404, "tracing is disabled", "not_found_error")
+        detail = ledger.read_session(ledger_dir, key)
+        if detail is None:
+            return error_json(404, "Session not found", "not_found_error")
+        return trace_view.session_timeline(detail, key)
+
     @app.get("/api/gateway/models")
     async def gateway_models(provider: str | None = None):
         selected = settings.default_provider()
@@ -2031,7 +2106,9 @@ def create_app(
         settings.router_tiers = merged_tiers
         new_fingerprint = ClassifierConfig.from_values(merged_values).fingerprint()
         if previous_fingerprint != new_fingerprint:
-            await state["router_classifier"].aclose()
+            old_classifier = state.get("router_classifier")
+            if old_classifier is not None:
+                await old_classifier.aclose()
             state["router_classifier"] = RouterClassifier(
                 ClassifierConfig.from_values(merged_values), transport=router_transport)
             state["_router_classifier_fingerprint"] = new_fingerprint
@@ -2052,6 +2129,7 @@ def create_app(
         features: dict[str, Any] = field(default_factory=lambda: {"tracing": True, "run_label": ""})
         session_key: str | None = None
         session_source: str | None = None
+        t0: float = 0.0
         upstream_model: str = ""
         routing_model: str = ""
         router_decision: dict[str, Any] | None = None
@@ -2226,3 +2304,17 @@ class _CompressionFailed(Exception):
     def __init__(self, inner: CompressError) -> None:
         super().__init__(inner.reason)
         self.inner = inner
+
+
+def _compression_mode(outcome: Outcome) -> str:
+    """Compaction mode label derived from the sidecar's own transform names.
+
+    Metadata only: the sidecar reports which transforms it applied; anything
+    that smells like the ML (Kompress) path is called 'ml', a concise set of
+    structural transforms stays 'structural', and an empty pass is 'pass'.
+    """
+    transforms = [str(t) for t in (outcome.transforms or []) if t]
+    lowered = [t.lower() for t in transforms]
+    if any("kompress" in t or "ml" in t for t in lowered):
+        return "ml"
+    return "structural" if transforms else "pass"

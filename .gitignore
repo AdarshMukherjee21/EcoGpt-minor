@@ -6,3 +6,4 @@ data/*
 !data/ecologits/
 !data/ikp/
 data/claude-desktop-backup/
+vendor/

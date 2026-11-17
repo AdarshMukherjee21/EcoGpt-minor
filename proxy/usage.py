@@ -272,7 +272,7 @@ def green_panel(path: Path) -> dict[str, Any]:
             return [dict(row) for row in db.execute(sql, args)]
 
     estimate_where = f"where {_ESTIMATED_WHERE}"
-    total = query(f"select count(*) as requests, {_GREEN_COLUMNS} from usage {estimate_where}")
+    total = query(f"select count(*) as requests, sum(output_tokens) as output_tokens, {_GREEN_COLUMNS} from usage {estimate_where}")
     by_model = query(
         "select model, model_basis, count(*) as requests, "
         f"{_GREEN_COLUMNS} from usage {estimate_where} group by model order by energy_kwh_mean desc"
@@ -280,6 +280,24 @@ def green_panel(path: Path) -> dict[str, Any]:
     by_day = query(
         "select date(ts, 'unixepoch') as day, count(*) as requests, "
         f"{_GREEN_COLUMNS} from usage {estimate_where} group by day order by day desc"
+    )
+    by_model_basis = query(
+        "select coalesce(model_basis, 'factor') as basis, count(*) as requests "
+        f"from usage {estimate_where} group by basis order by requests desc"
+    )
+    # Bucketed energy-over-time for the chart: hourly for the recent window,
+    # daily beyond it (same doctrine as the trajectory timeline: auto bucket).
+    row_count = query("select count(*) as n, "
+                      "min(ts) as first_ts, max(ts) as last_ts from usage")[0]
+    span_days = 0.0
+    if row_count["first_ts"] and row_count["last_ts"]:
+        span_days = (row_count["last_ts"] - row_count["first_ts"]) / 86400.0
+    bucket = "hour" if span_days <= 3 else "day"
+    fmt = "%Y-%m-%dT%H:00" if bucket == "hour" else "%Y-%m-%d"
+    timeline = query(
+        "select strftime('" + fmt + "', ts, 'unixepoch') as bucket, count(*) as requests, "
+        f"{_GREEN_COLUMNS} from usage {estimate_where} "
+        "group by bucket order by bucket asc limit 400"
     )
     recent = [
         {
@@ -297,10 +315,20 @@ def green_panel(path: Path) -> dict[str, Any]:
             f"from usage {estimate_where} order by id desc limit 200"
         )
     ]
+    totals = total[0] if total else {}
+    est_requests = int(totals.get("requests") or 0)
+    energy_mean = float(totals.get("energy_kwh_mean") or 0.0)
+    out_tokens = float(totals.get("output_tokens") or 0.0)
     return {
-        "totals": total[0] if total else {},
+        "totals": totals,
         "by_model": by_model,
         "by_day": by_day,
+        "methods": by_model_basis,
+        "timeline": {"bucket": bucket, "points": timeline},
+        "per_call": {
+            "energy_kwh_mean": (energy_mean / est_requests) if est_requests else None,
+            "energy_kwh_per_1k_output": (energy_mean / (out_tokens / 1000.0)) if out_tokens else None,
+        },
         "recent": list(reversed(recent)),
     }
 
@@ -323,10 +351,16 @@ def coverage(path: Path) -> dict[str, Any]:
     total_rows = query("select count(*) as requests from usage")[0]["requests"]
     by_status = {row["impact_state"]: row["requests"] for row in rows}
     estimated = by_status.get("estimated", 0) + by_status.get("legacy_estimated", 0)
+    without_reasons = {k: v for k, v in by_status.items()
+                       if k not in ("estimated", "legacy_estimated")}
     return {
         "requests_total": total_rows,
         "estimated": estimated,
         "legacy_estimated": by_status.get("legacy_estimated", 0),
+        "without_estimate": sum(without_reasons.values()),
+        # Named reasons a request carries no estimate (trajectory honesty rule:
+        # unestimated calls are counted and named, never folded into totals).
+        "without_reasons": without_reasons,
         "by_status": by_status,
         "ratio": round(estimated / total_rows, 4) if total_rows else 1.0,
     }
@@ -348,6 +382,9 @@ class StreamUsage:
         self.usage: dict[str, Any] = {}
         self.stop_reason: str | None = None
         self.first_content: float | None = None
+        # Observed SSE chunk count (trace timeline metadata; a chunk may carry
+        # several events — this counts chunks, not events).
+        self.chunk_count = 0
 
     def note_content(self) -> None:
         if self.first_content is None:
@@ -359,6 +396,7 @@ class StreamUsage:
         return (self.first_content - started) * 1000.0
 
     def feed(self, chunk: bytes) -> None:
+        self.chunk_count += 1
         self._buffer += chunk
         while b"\n" in self._buffer:
             line, self._buffer = self._buffer.split(b"\n", 1)

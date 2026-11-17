@@ -208,6 +208,10 @@ class Decision:
     duration_ms: float = 0.0
     fallback_used: bool = False
     fallback_reason: str = ""
+    # Trace plumbing (ledger v2): which route the tier was dispatched through
+    # and whether model overrides/aliases rewrote the tier's model id.
+    dispatch_route: str = ""
+    tier_model_alias: bool = False
 
     def record(self) -> dict[str, Any]:
         """Ledger/usage-safe projection (metadata only — never prompt content)."""
@@ -231,6 +235,8 @@ class Decision:
             "duration_ms": self.duration_ms,
             "fallback_used": self.fallback_used,
             "fallback_reason": self.fallback_reason,
+            "dispatch_route": self.dispatch_route,
+            "tier_model_alias": self.tier_model_alias,
         }
 
 

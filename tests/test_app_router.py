@@ -165,3 +165,33 @@ def test_oversized_context_rejected_unless_flag(tmp_path):
     client = _router_client(tmp_path, allow_oversized=True)
     resp = client.post("/v1/messages", json=body)
     assert resp.status_code == 200
+
+
+# --- admin API regression: classifier rebuild before first use -------------------
+
+def test_router_put_values_rebuilds_classifier_on_cold_app(tmp_path):
+    """Changing the endpoint/config must not 500 when no request has run yet.
+
+    Regression: PUT /api/router closed state["router_classifier"] before that
+    lazy key existed (KeyError -> HTTP 500) whenever a save changed the config
+    fingerprint before the first classification.
+    """
+    client = _router_client(tmp_path)
+    resp = client.put("/api/router", json={"values": {"endpoint_url": "http://127.0.0.1:9/v1/systemone"}})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is True
+
+
+def test_router_put_accepts_tiers_and_values_together(tmp_path):
+    """Dashboard save submits edited scalar values AND the tier ladder in one call."""
+    client = _router_client(tmp_path)
+    resp = client.put("/api/router", json={
+        "values": {"endpoint_url": "http://127.0.0.1:9/v1/systemone"},
+        "tiers": [
+            {"id": "goldfish", "description": "execution work", "model": "claude-haiku-5-5"},
+            {"id": "elephant", "description": "planning work", "model": "claude-sonnet-5-5"},
+        ]})
+    assert resp.status_code == 200
+    assert resp.json()["validity"]["valid"] is True
+    tier_ids = [t["id"] for t in client.get("/api/router").json()["tiers"]]
+    assert tier_ids == ["goldfish", "elephant"]

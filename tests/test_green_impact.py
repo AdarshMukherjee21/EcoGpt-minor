@@ -250,6 +250,8 @@ def test_coverage_counts_estimated_and_legacy_rows(tmp_path):
     assert cov["requests_total"] == 2
     assert cov["estimated"] == 2
     assert cov["legacy_estimated"] == 1
+    assert cov["without_estimate"] == 0
+    assert cov["without_reasons"] == {}
     assert cov["by_status"]["estimated"] == 1
     assert cov["ratio"] == 1.0
     # an out-of-band row break the ratio
@@ -260,6 +262,9 @@ def test_coverage_counts_estimated_and_legacy_rows(tmp_path):
                      "'unconfigured_model')", (0.0,))
     cov = usage_log.coverage(db)
     assert cov["requests_total"] == 3 and cov["estimated"] == 2 and cov["ratio"] == 0.6667
+    # the unconfigured request is counted and NAMED, never folded into the total
+    assert cov["without_estimate"] == 1
+    assert cov["without_reasons"] == {"unconfigured_model": 1}
 
 
 def test_green_panel_includes_water_and_recent_series(tmp_path):
@@ -275,6 +280,14 @@ def test_green_panel_includes_water_and_recent_series(tmp_path):
     assert len(recent) == 1
     assert recent[0]["model"] == "glm-5-2" and recent[0]["legacy"] is False
     assert recent[0]["impact_status"] == "estimated"
+    # trajectory-style aggregation extras
+    assert panel["timeline"]["bucket"] in ("hour", "day")
+    assert len(panel["timeline"]["points"]) == 1
+    assert panel["timeline"]["points"][0]["requests"] == 1
+    assert panel["timeline"]["points"][0]["energy_kwh_mean"] == pytest.approx(impacts["energy_kwh"]["mean"])
+    assert panel["methods"][0]["basis"] == "factor" or panel["methods"], panel["methods"]
+    assert panel["per_call"]["energy_kwh_mean"] == pytest.approx(impacts["energy_kwh"]["mean"])
+    assert panel["per_call"]["energy_kwh_per_1k_output"] > 0
 
 
 def test_stream_usage_observes_ttft():

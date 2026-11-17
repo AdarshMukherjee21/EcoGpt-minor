@@ -143,16 +143,17 @@ def test_response_and_stage_and_error_shapes(tmp_path):
         tmp_path, session_key="claude:s1:f", session_source="claude_header",
         request_id="req-9", run_label="ablate", stage="compression", message="boom",
     )
-    assert error == {
-        "type": "error",
-        "ts": error["ts"],
-        "run_label": "ablate",
-        "session_key": "claude:s1:f",
-        "session_source": "claude_header",
-        "request_id": "req-9",
-        "stage": "compression",
-        "message": "boom",
-    }
+    # schema v2 envelope: immutable fields + additive keys
+    assert error["type"] == "error"
+    assert error["schema_version"] == 2
+    assert error["run_label"] == "ablate"
+    assert error["session_key"] == "claude:s1:f"
+    assert error["session_source"] == "claude_header"
+    assert error["request_id"] == "req-9"
+    assert error["stage"] == "compression"
+    assert error["message"] == "boom"
+    # no t0 offset passed -> the field is absent, never 0 (trajectory honesty rule)
+    assert "t0_offset_ms" not in error
 
 
 def test_file_naming_sanitizes_and_never_collides(tmp_path):

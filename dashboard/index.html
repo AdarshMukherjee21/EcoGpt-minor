@@ -77,6 +77,71 @@ tr:hover td { background: #1a212d; }
 th.num, td.num { text-align: right; }
 tr.overridden td { background: #14261a; }
 
+/* ---------------- trace view (trajectory-style) ---------------- */
+.tracebar { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; }
+.tracebar input { width: 320px; }
+.trace-grid { display: grid; grid-template-columns: 280px 1fr 1fr; gap: 14px; align-items: start; }
+@media (max-width: 1100px) { .trace-grid { grid-template-columns: 1fr; } }
+.trace-pane { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; max-height: 78vh; overflow-y: auto; }
+.trace-pane h2 { font-size: 14px; margin: 0 0 10px; }
+.tcard { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px; cursor: pointer; }
+.tcard:hover { background: #1a212d; }
+.tcard.sel { border-color: var(--accent2); }
+.tcard .top { display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+.tcard .meta { font-size: 11px; color: var(--muted); }
+.tag { display: inline-block; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; font-size: 10px; color: var(--muted); margin-right: 4px; }
+.tag.warn { border-color: var(--warn); color: var(--warn); }
+.tag.bad { border-color: var(--bad); color: var(--bad); }
+.tag.ok { border-color: #1d4428; color: var(--accent); }
+/* round-trip step table */
+.tsteps { width: 100%; font-size: 12px; }
+.tsteps td, .tsteps th { padding: 4px 6px; border-bottom: 1px solid #21283b; text-align: left; white-space: nowrap; }
+.tsteps th { color: var(--muted); font-weight: 500; font-size: 11px; }
+.tsteps tr.sel td { background: #142430; }
+.tsteps tr:hover td { background: #1a212d; }
+.tsteps td.num, .tsteps th.num { text-align: right; }
+/* waterfall */
+.wf { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 10px; }
+.wf-row { display: grid; grid-template-columns: 110px 1fr 70px; gap: 8px; align-items: center; font-size: 11px; margin: 4px 0; }
+.wf-track { position: relative; height: 14px; background: #10151c; border-radius: 4px; overflow: hidden; }
+.wf-bar { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; min-width: 3px; }
+.wf-bar.request { background: #58a6ff; }
+.wf-bar.compression { background: #bc8cff; }
+.wf-bar.router { background: #d29922; }
+.wf-bar.upstream { background: #3fb950; }
+.wf-bar.error { background: var(--bad); }
+.wf-legend { display: flex; gap: 12px; font-size: 10px; color: var(--muted); margin-top: 6px; }
+.wf-legend span::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 2px; margin-right: 4px; }
+.wf-legend .l-request::before { background: #58a6ff; } .wf-legend .l-compression::before { background: #bc8cff; }
+.wf-legend .l-router::before { background: #d29922; } .wf-legend .l-upstream::before { background: #3fb950; }
+.wf-legend .l-error::before { background: var(--bad); }
+/* details blocks + range bars (trajectory ports) */
+.blk { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; background: #12161d; }
+.blk > summary { cursor: pointer; padding: 7px 10px; font-size: 12px; display: flex; justify-content: space-between; gap: 8px; }
+.blk > .body { padding: 2px 12px 10px; font-size: 12px; }
+.blk .kv { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 6px 0; }
+.blk .kv dt { color: var(--muted); }
+.blk .kv dd { margin: 0; }
+.rangebar { position: relative; height: 6px; background: #10151c; border-radius: 3px; margin: 8px 0 4px; }
+.rangebar i { position: absolute; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); opacity: .55; }
+.rangebar b { position: absolute; top: -3px; width: 3px; height: 12px; border-radius: 2px; background: var(--accent); }
+.probrow { display: flex; align-items: center; gap: 8px; font-size: 11px; margin: 3px 0; }
+.chip .rangebar { margin: 8px 0 0; }
+/* waterfall rows as actually rendered by traceBar() */
+.tracebar-row { display: grid; grid-template-columns: 110px 1fr 70px; gap: 8px; align-items: center; font-size: 11px; margin: 4px 0; }
+.tracebar-label { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tracebar-track { position: relative; height: 14px; background: #10151c; border-radius: 4px; overflow: hidden; }
+.tracebar-fill { position: absolute; top: 2px; bottom: 2px; border-radius: 3px; min-width: 3px; }
+
+/* ranked energy bars with whiskers (trace/green view) */
+.hbar { margin: 6px 0; }
+.hbar .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-size: 12px; }
+.hbar .row .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbar .row .val { color: var(--muted); white-space: nowrap; }
+.hbar .track { position: relative; height: 10px; background: #10151c; border-radius: 4px; overflow: hidden; margin-top: 3px; }
+.hbar .track .fill { position: absolute; top: 0; bottom: 0; left: 0; background: var(--accent); opacity: .55; border-radius: 3px; }
+.hbar .track .whisk { position: absolute; top: 40%; height: 20%; background: var(--accent); border-radius: 2px; }
+
 /* settings */
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 16px; }
 .tabs button { background: transparent; border: none; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 16px; color: var(--muted); }
@@ -106,6 +171,9 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
   <span class="spacer"></span>
   <button class="gearbtn" id="nav-dashboard" title="Dashboard">
     Dashboard
+  </button>
+  <button class="gearbtn" id="nav-trace" title="Trace">
+    Trace
   </button>
   <button class="gearbtn" id="nav-settings" title="Settings">
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -143,7 +211,9 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
       </table></div>
     </div>
     <div class="card">
-      <h2>Green totals per model</h2>
+      <h2>Energy by model</h2>
+      <div id="green-energy-bars"></div>
+      <p class="muted" style="font-size:11px;margin:4px 0 0">Bar = mean energy per model; the thin marker spans min&ndash;max. Ranked by mean, estimates only.</p>
       <div class="tablescroll"><table>
         <thead><tr><th>Model</th><th>Basis</th><th class="num">Requests</th><th class="num">Energy (Wh)</th><th class="num">GWP (g CO&#8322;e)</th><th class="num">Water (mL)</th></tr></thead>
         <tbody id="green-models"></tbody>
@@ -158,6 +228,39 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
         <thead><tr><th>Session</th><th>Source</th><th>Run label</th><th class="num">Requests</th><th class="num">Entries</th><th>Last seen</th></tr></thead>
         <tbody id="sessions-rows"></tbody>
       </table></div>
+    </div>
+    <div class="card">
+      <h2>Energy over time</h2>
+      <div id="energy-time-chart"></div>
+      <p id="green-per-call" class="muted" style="font-size:12px;margin:4px 0 0"></p>
+    </div>
+    <div class="card">
+      <h2>How these numbers are made</h2>
+      <div id="green-methods" class="muted" style="font-size:12px"></div>
+    </div>
+  </div>
+
+  <div class="view" id="view-trace">
+    <div class="tracebar">
+      <input id="trace-filter" type="search" placeholder="Filter sessions (/)" aria-label="Filter sessions">
+      <span id="trace-status" class="muted"></span>
+      <span class="spacer" style="flex:1"></span>
+      <span class="muted" style="font-size:11px" title="Trace refreshes every 3 s while this view is open">&#9679; live</span>
+    </div>
+    <div class="trace-grid">
+      <section class="trace-pane" id="trace-sessions-pane">
+        <h2>Sessions <span id="trace-scount" class="muted"></span></h2>
+        <div id="trace-sessions"></div>
+        <p id="trace-sempty" class="muted" hidden>No tracing sessions yet.</p>
+      </section>
+      <section class="trace-pane" id="trace-steps-pane">
+        <h2>Round trips <span id="trace-session-id" class="muted"></span></h2>
+        <div id="trace-steps"><p class="muted">Select a session.</p></div>
+      </section>
+      <section class="trace-pane" id="trace-detail-pane">
+        <h2>Detail</h2>
+        <div id="trace-detail"><p class="muted">Select a round trip.</p></div>
+      </section>
     </div>
   </div>
 
@@ -393,12 +496,14 @@ function show(view) {
   document.querySelectorAll(".view").forEach((el) => el.classList.remove("active"));
   $("view-" + view).classList.add("active");
   $("nav-settings").classList.toggle("active", view === "settings");
-  $("nav-dashboard").classList.toggle("active", view === "dashboard");
+  $("nav-trace").classList.toggle("active", view === "trace");
   if (view === "dashboard") loadDashboard();
   if (view === "settings") loadModels();
+  if (view === "trace") loadTraceSessions();
 }
 $("nav-dashboard").onclick = () => show("dashboard");
 $("nav-settings").onclick = () => show("settings");
+$("nav-trace").onclick = () => show("trace");
 document.querySelectorAll(".tabs button").forEach((btn) => {
   btn.onclick = () => {
     document.querySelectorAll(".tabs button").forEach((b) => b.classList.remove("active"));
@@ -945,6 +1050,43 @@ const GREEN_PALETTE = ["#3fb950", "#58a6ff", "#d29922", "#bc8cff", "#f778ba", "#
 
 function greenUnitState() { return GREEN_UNIT_SERIES[$("green-unit").value] || GREEN_UNIT_SERIES.gwp; }
 
+/* ranked per-model energy bars with min-max whiskers (trajectory green view port) */
+function energyBars(rows) {
+  if (!rows || !rows.length) return "<p class='muted' style='font-size:12px'>No estimated requests yet.</p>";
+  const sorted = rows.slice().sort((a, b) =>
+    ((b.energy_kwh_mean || {}).mean || b.energy_kwh_mean || 0) - ((a.energy_kwh_mean || {}).mean || a.energy_kwh_mean || 0));
+  const means = sorted.map((m) => (m.energy_kwh_mean && m.energy_kwh_mean.mean != null ? m.energy_kwh_mean.mean : m.energy_kwh_mean) || 0);
+  const max = Math.max(...means, 1e-12);
+  return sorted.map((m) => {
+    const r = m.energy_kwh_mean || {};
+    const mean = r.mean != null ? r.mean : r;
+    const min = r.min != null ? r.min : mean;
+    const maxv = r.max != null ? r.max : mean;
+    const w = mean ? (mean / max) * 100 : 0;
+    const lo = mean ? Math.min(100, (min / max) * 100) : 0;
+    const hi = mean ? Math.min(100, (maxv / max) * 100) : 0;
+    const basis = m.model_basis && m.model_basis !== "estimated" && m.model_basis !== "exact"
+      ? ` <span class="tag warn" title="${esc(m.model_basis)}: weaker estimate">${esc(m.model_basis)}</span>` : "";
+    return `<div class="hbar">
+      <div class="row"><span class="name" title="${esc(m.model)}">${esc(labelFor(m.model))}</span>
+      <span class="val">${mean != null ? humanUnits(mean, "Wh") : "&ndash;"}</span>${basis}</div>
+      <div class="track"><i class="fill" style="width:${w.toFixed(2)}%"></i><i class="whisk" style="left:${lo.toFixed(2)}%;width:${Math.max(0, hi - lo).toFixed(2)}%"></i></div>
+    </div>`;
+  }).join("");
+}
+
+/* human-readable magnitude scaling (trajectory human() port) */
+function humanUnits(v, base) {
+  if (v == null) return "&ndash;";
+  const steps = { Wh: [[1e-3, "mWh"], [1, "Wh"], [1e3, "kWh"]], L: [[1e-3, "mL"], [1, "L"], [1e3, "kL"]], g: [[1e-3, "mg"], [1, "g"], [1e3, "kg"]], kg: [[1e-3, "g"], [1, "kg"], [1e3, "t"]] };
+  const table = steps[base] || [[1, base]];
+  let chosen = table[table.length - 1];
+  for (const [f, u] of table) { if (v >= f) chosen = [f, u]; }
+  const [f, u] = chosen;
+  const n = v / f;
+  return `${n >= 100 ? Math.round(n) : Number(n.toPrecision(3))} ${u}`;
+}
+
 function impactChart(rows, unit) {
   const el = $("chart-green-req");
   if (!rows || rows.length === 0) { el.innerHTML = "<p class='muted' style='font-size:12px'>No estimated requests yet.</p>"; return; }
@@ -999,17 +1141,36 @@ async function loadDashboard() {
   $("chips").innerHTML = chips.map((c) =>
     `<div class="chip ${c.cls}"><div class="label">${c.label}</div><div class="value">${c.value}</div>${c.sub ? `<div class="sub">${c.sub}</div>` : ""}</div>`).join("");
   if (coverage) {
-    const note = coverage.ratio < 1
-      ? `Environmental coverage: ${coverage.estimated}/${coverage.requests_total} requests. Totals are partial when a request is unconfigured or missing usage.`
-      : `Environmental coverage: ${coverage.estimated}/${coverage.requests_total} requests.`;
-    $("green-coverage").textContent = note;
+    // trajectory honesty rule: unestimated calls are named, never folded into totals
+    const reasons = Object.entries(coverage.without_reasons || {})
+      .map(([reason, n]) => `${n} \u00d7 ${reason}`).join(", ");
+    const note = `Environmental coverage: ${coverage.estimated}/${coverage.requests_total} requests.` +
+      (reasons ? ` ${coverage.without_estimate} without an estimate: ${reasons}. They are left out of every total, not counted as zero.` : "");
+    $("#green-coverage").textContent = note;
   }
+  // energy-over-time buckets (hourly for recent windows, then daily; server decides)
   barChart("chart-tokens", days.map((d) => ({ label: d.day.slice(5), values: [d.input_tokens, d.output_tokens] })),
     [{ color: "#58a6ff" }, { color: "#3fb950" }]);
   barChart("chart-cost", days.map((d) => ({ label: d.day.slice(5), values: [d.cost || 0] })), [{ color: "#d29922" }]);
   barChart("chart-green", days.map((d) => ({ label: d.day.slice(5), values: [Math.round((d.gwp_kgco2e_mean || 0) * 1000), Math.round((d.gwp_kgco2e_max || 0) * 1000)] })),
     [{ color: "#3fb950" }, { color: "#1d4428" }]);
   impactChart(green.recent || [], greenUnitState());
+  // trajectory ports: energy over time (bucketed), per-model whisker ranking,
+  // per-call normalization, method provenance
+  const tl = green.timeline || { bucket: "day", points: [] };
+  barChart("energy-time-chart", (tl.points || []).map((p) => ({
+    label: tl.bucket === "hour" ? (p.bucket || "").slice(11, 16) : (p.bucket || "").slice(5),
+    values: [Math.round((p.energy_kwh_mean || 0) * 1000), Math.round((p.energy_kwh_max || 0) * 1000)],
+  })), [{ color: "#3fb950" }, { color: "#1d4428" }]);
+  const pc = green.per_call || {};
+  $("#green-per-call").innerHTML =
+    `${(tl.points || []).length} ${esc(tl.bucket)} bucket${(tl.points || []).length === 1 ? "" : "s"}` +
+    (pc.energy_kwh_mean != null ? ` · ~${sig(pc.energy_kwh_mean * 1000)} Wh per request` : "") +
+    (pc.energy_kwh_per_1k_output != null ? ` · ~${sig(pc.energy_kwh_per_1k_output * 1000)} Wh per 1k output tokens` : "");
+  $("#green-energy-bars").innerHTML = energyBars(green.by_model || []);
+  $("#green-methods").innerHTML = (green.methods || []).map((m) =>
+    `<span class="tag ok">${esc(m.basis)}</span> ${fmt(m.requests)} request${m.requests === 1 ? "" : "s"}`).join(" ") +
+    ` <span class="muted">· estimates only; ranges are model bounds, not confidence intervals</span>`;
   $("usage-rows").innerHTML = (usage.rows || []).map((r) => `<tr>
     <td>${fmtWhen(r.ts)}</td><td title="${esc(r.model)}">${esc(labelFor(r.model))}</td><td>${esc(r.route)}</td>
     <td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td>
@@ -1046,14 +1207,165 @@ $("green-unit").onchange = async () => {
 /* request ledger CSV export (demo-style green_requests.csv) */
 $("green-export").onclick = () => { window.location = "/api/usage/export.csv"; };
 
+/* ---------------- trace view (trajectory-style port) ---------------- */
+const tq = (sel) => document.querySelector(sel);
+const trace = { sessions: [], session: null, timeline: null, step: null };
+const TRACE_COLORS = { request: "#58a6ff", compression: "#bc8cff", router: "#d29922", upstream: "#3fb950", error: "#f85149" };
+
+function traceStageClass(stage) { return TRACE_COLORS[stage] ? stage : "upstream"; }
+function traceMs(v) {
+  return v == null ? "&ndash;" : v >= 1000 ? (v / 1000).toFixed(2) + " s" : Math.round(v) + " ms";
+}
+/* timeline waterfall: each span positioned by its t0 offsets */
+function traceBar(spans) {
+  const known = (spans || []).filter((s) => s.start_ms != null && s.end_ms != null);
+  if (!known.length) return "";
+  const horizon = Math.max(...known.map((s) => s.end_ms), 1);
+  return known.map((s) => {
+    const lo = Math.max(0, Math.min(100, (s.start_ms / horizon) * 100));
+    const width = Math.max(0.4, Math.min(100 - lo, ((s.end_ms - s.start_ms) / horizon) * 100));
+    const color = TRACE_COLORS[traceStageClass(s.stage)] || "var(--accent2)";
+    const title = `${s.stage}: ${Math.round(s.start_ms)} -> ${Math.round(s.end_ms)} ms`;
+    return `<div class="tracebar-row"><span class="tracebar-label">${esc(s.stage)}</span>` +
+      `<div class="tracebar-track"><i class="tracebar-fill" style="left:${lo.toFixed(2)}%;width:${width.toFixed(2)}%;background:${color}" title="${esc(title)}"></i></div></div>`;
+  }).join("");
+}
+function traceDetail(step) {
+  let html = traceKv([
+    ["when", step.ts],
+    ["requested", step.requested_model],
+    ["model", step.model_served],
+    ["route", step.route],
+    ["status", step.status],
+    ["duration", traceMs(step.duration_ms)],
+    ["TTFT", traceMs(step.ttft_ms)],
+  ]);
+  if (step.router) {
+    html += traceDetailBlock("Router decision", traceKv([
+      ["raw choice", step.router.raw_choice],
+      ["final tier", step.router.final_tier],
+      ["confidence", step.router.confidence],
+      ["probabilities", JSON.stringify(step.router.probabilities || {})],
+      ["classify ms", step.router.classify_latency_ms],
+      ["endpoint host", step.router.endpoint_host],
+      ["router model", step.router.router_model],
+      ["warmth", step.router.warmth_applied],
+      ["stickiness", step.router.stickiness_applied],
+    ]), { open: true });
+  }
+  if (step.compression) {
+    html += traceDetailBlock("Compaction", traceKv([
+      ["tokens before", step.compression.tokens_before],
+      ["tokens after", step.compression.tokens_after],
+      ["tokens saved", step.compression.tokens_saved],
+      ["mode", step.compression.mode],
+      ["sidecar roundtrip ms", step.compression.roundtrip_ms],
+      ["attempts", step.compression.attempts],
+      ["fallback", step.compression.fallback],
+    ]));
+  }
+  html += `<div class="wf">${traceBar(step.spans)}</div>`;
+  return html;
+}
+async function loadTraceSessions() {
+  const pane = document.getElementById("trace-sessions-pane");
+  const keepScroll = pane ? pane.scrollTop : 0;
+  let data;
+  try { data = await api("/api/sessions"); }
+  catch (err) { tq("#trace-sessions").innerHTML = `<p class="muted">Tracing unavailable: ${esc(err.message)}</p>`; return; }
+  trace.sessions = data.sessions || [];
+  tq("#trace-scount").textContent = `(${trace.sessions.length})`;
+  tq("#trace-sessions").innerHTML = trace.sessions.map((s) =>
+    `<div class="tcard ${s.key === trace.session ? "sel" : ""}" data-tkey="${esc(s.key)}">
+      <div class="top"><code>${esc((s.key || "").slice(0, 24))}</code>
+      <span class="muted">${s.requests ?? 0} req · ${esc(s.run_label || "&ndash;")}</span></div>
+    </div>`).join("") || '<p class="muted">No trace sessions yet.</p>';
+  if (pane) pane.scrollTop = keepScroll;
+}
+async function loadTraceTimeline(key) {
+  trace.session = key;
+  try { trace.timeline = await api(`/api/sessions/${encodeURIComponent(key)}/timeline`); }
+  catch (err) {
+    trace.timeline = null;
+    tq("#trace-steps").innerHTML = `<p class="muted">Timeline unavailable: ${esc(err.message)}</p>`;
+    return;
+  }
+  renderTraceSteps(loadTraceStepDetail);
+}
+function renderTraceSteps(after) {
+  const t = trace.timeline;
+  if (!t) return;
+  const pane = document.getElementById("trace-steps-pane");
+  const keepScroll = pane ? pane.scrollTop : 0;
+  tq("#trace-steps").innerHTML = `<table class="tsteps"><thead><tr>
+    <th>#</th><th>Model</th><th class="num">TTFT</th><th class="num">ms</th>
+    <th>Tier</th><th>Status</th></tr></thead><tbody>` +
+    (t.steps || []).map((s, i) => `<tr data-tstep="${esc(s.request_id)}" class="${s.request_id === trace.step ? "sel" : ""}">
+      <td>${i + 1}</td><td>${esc(s.model_served || s.requested_model || "&ndash;")}</td>
+      <td class="num">${s.ttft_ms == null ? "&ndash;" : traceMs(s.ttft_ms)}</td>
+      <td class="num">${traceMs(s.duration_ms)}</td>
+      <td>${esc((s.router || {}).final_tier || "&ndash;")}</td>
+      <td class="${s.status == null || s.status >= 400 ? "bad" : "ok"}">${s.status == null ? "&ndash;" : s.status}</td></tr>`).join("") +
+    `</tbody></table>`;
+  if (pane) pane.scrollTop = keepScroll;
+  if (after) after();
+}
+async function loadTraceStepDetail() {
+  if (!trace.step || !trace.session) return;
+  try {
+    const detail = await api(`/api/trace/calls/${encodeURIComponent(trace.session)}/${encodeURIComponent(trace.step)}`);
+    tq("#trace-detail").innerHTML = traceDetail(detail);
+  } catch (err) { tq("#trace-detail").innerHTML = `<p class="muted">Detail unavailable: ${esc(err.message)}</p>`; }
+}
+tq("#trace-sessions").addEventListener("click", (e) => {
+  const card = e.target.closest(".tcard");
+  if (!card) return;
+  trace.step = null;
+  loadTraceTimeline(card.dataset.tkey);
+});
+tq("#trace-steps").addEventListener("click", (e) => {
+  const row = e.target.closest("tr[data-tstep]");
+  if (!row) return;
+  trace.step = row.dataset.tstep;
+  document.querySelectorAll("#trace-steps tr[data-tstep]").forEach((r) => r.classList.toggle("sel", r === row));
+  loadTraceStepDetail();
+});
+tq("#trace-filter").addEventListener("input", (e) => {
+  const q = e.target.value.trim().toLowerCase();
+  document.querySelectorAll("#trace-sessions .tcard").forEach((c) => {
+    c.hidden = q && !c.textContent.toLowerCase().includes(q);
+  });
+});
+function traceTick() {
+  if (!tq("#view-trace").classList.contains("active")) return;
+  loadTraceSessions();
+  if (trace.session) loadTraceTimeline(trace.session);
+}
+function traceKv(rows) {
+  return `<dl class="kv">` + rows.map(([k, v]) =>
+    `<dt>${esc(k)}</dt><dd>${v == null ? "&ndash;" : esc(v)}</dd>`).join("") + `</dl>`;
+}
+function traceDetailBlock(title, body) {
+  return `<details class="blk" data-tid="${esc(title)}"><summary>${esc(title)}</summary><div class="body">${body}</div></details>`;
+}
+
+// deep link: #trace-session=<key> opens that session straight away
+(function initTraceDeepLink() {
+  const q = new URLSearchParams(location.hash.slice(1));
+  if (q.get("trace-session")) { show("trace"); loadTraceTimeline(q.get("trace-session")); }
+})();
+
 /* ---------------- boot ---------------- */
 loadState().then(() => {
   loadFeatures();
   loadDashboard();
-  loadModels();   // Models & routing table must render on first open, not only on provider change
+  loadModels();
   setInterval(() => { if ($("view-dashboard").classList.contains("active")) loadDashboard(); }, 10000);
+  // trace view live refresh (3 s, brochure-style: only while the view is open)
+  setInterval(traceTick, 3000);
 });
 
+/* ---------------- trace view (trajectory-style port) ---------------- */
 /* ---------------- router tab ---------------- */
 let routerData = null;
 

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -41,6 +42,10 @@ class Outcome:
     session_replayed: bool = False
     attempts: int = 1
     fallback: str | None = None
+    # Latency of the successful (last) sidecar HTTP roundtrip, in milliseconds;
+    # metadata for the trace timeline (the stage's total duration also covers
+    # framing and retries). 0.0 = never observed.
+    roundtrip_ms: float = 0.0
 
 
 class SidecarClient:
@@ -93,10 +98,14 @@ class SidecarClient:
         reason = "no attempt made"
         while attempts <= self._retries:
             attempts += 1
+            started = time.monotonic()
             try:
                 resp = await self._client.post("/v1/compress", json=payload, headers=self._headers())
+                latency_ms = (time.monotonic() - started) * 1000.0
                 if resp.status_code == 200:
-                    return self._outcome(resp.json(), session_key, session_source, attempts)
+                    outcome = self._outcome(resp.json(), session_key, session_source, attempts)
+                    outcome.roundtrip_ms = latency_ms
+                    return outcome
                 reason = f"HTTP {resp.status_code}"
                 if resp.status_code not in RETRYABLE_STATUS:
                     break

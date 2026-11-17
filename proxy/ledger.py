@@ -10,6 +10,13 @@ every write failure goes to stderr and never breaks the request.
 
 The ablation harness stamps each entry with the ``run_label`` from the features
 block in config.json; ``request_id`` correlates all entries of one round trip.
+
+Schema v2 (trajectory-style timeline support). Additive, backward compatible:
+``schema_version: 2`` on every new entry; ``span_id`` (one write, one span) and
+``t0_offset_ms`` (milliseconds since the round trip's request arrival, monotonic
+clock) appear only when known — a timing that was never observed is absent or
+``null``, never 0. Old v1 files read unchanged: readers ignore unknown keys and
+fall back to order-based rendering when offsets are missing.
 """
 
 from __future__ import annotations
@@ -18,14 +25,21 @@ import hashlib
 import json
 import re
 import sys
+import uuid
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 NO_SESSION_KEY = "_no-session"
+SCHEMA_VERSION = 2
 _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
 _KEY_OK = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+def new_span_id() -> str:
+    """Short id for one ledger entry (one write == one span)."""
+    return uuid.uuid4().hex[:12]
 
 
 def session_path(ledger_dir: Path | str, session_key: str | None) -> Path:
@@ -38,6 +52,11 @@ def session_path(ledger_dir: Path | str, session_key: str | None) -> Path:
 
 def _canonical(data: Any) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def chars_of(data: Any) -> int:
+    """Public alias: canonical serialization size of a body (metadata, not content)."""
+    return len(_canonical(data))
 
 
 def _hash(data: Any) -> str:
@@ -78,15 +97,24 @@ def _envelope(
     session_key: str | None,
     session_source: str | None,
     request_id: str,
+    t0_offset_ms: float | None = None,
+    span_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    entry = {
         "type": kind,
         "ts": datetime.now(timezone.utc).isoformat(),
+        "schema_version": SCHEMA_VERSION,
         "run_label": run_label or "",
         "session_key": session_key,
         "session_source": session_source,
         "request_id": request_id,
     }
+    # Trajectory honesty rule: a mark that was never observed is absent, never 0.
+    if span_id:
+        entry["span_id"] = span_id
+    if t0_offset_ms is not None:
+        entry["t0_offset_ms"] = int(t0_offset_ms)
+    return entry
 
 
 def _append(ledger_dir: Path | str, session_key: str | None, entry: dict[str, Any]) -> None:
@@ -120,13 +148,19 @@ def request_event(
     stream: bool,
     body: dict[str, Any],
     upstream_model: str | None = None,
+    t0_offset_ms: float | None = 0,
 ) -> dict[str, Any]:
-    """Log the request half: models, route, message/system/tool fingerprints. No payloads."""
+    """Log the request half: models, route, message/system/tool fingerprints. No payloads.
+
+    The request is the round trip's timeline anchor: ``t0_offset_ms`` is 0 by
+    construction (callers may still pass their measured offset).
+    """
     messages = [m for m in body.get("messages") or [] if isinstance(m, dict)]
     tools = body.get("tools") or []
     entry = _envelope(
         "request", run_label=run_label, session_key=session_key,
         session_source=session_source, request_id=request_id,
+        span_id=new_span_id(), t0_offset_ms=t0_offset_ms if t0_offset_ms is not None else 0,
     )
     entry.update({
         "requested_model": requested_model or "",
@@ -159,11 +193,18 @@ def stage_event(
     run_label: str,
     feature: str,
     provenance: dict[str, Any] | None = None,
+    t0_offset_ms: float | None = None,
 ) -> dict[str, Any]:
-    """Log one pipeline stage and its provenance (tokens, fallback reason, duration)."""
+    """Log one pipeline stage and its provenance (tokens, fallback reason, duration).
+
+    ``t0_offset_ms`` (when the caller measured it) anchors the stage on the
+    round trip's timeline; ``provenance["duration_ms"]`` then gives the span's
+    width.
+    """
     entry = _envelope(
         "stage", run_label=run_label, session_key=session_key,
         session_source=session_source, request_id=request_id,
+        span_id=new_span_id(), t0_offset_ms=t0_offset_ms,
     )
     entry.update({"feature": feature, "provenance": dict(provenance or {})})
     _append(ledger_dir, session_key, entry)
@@ -183,16 +224,28 @@ def response_event(
     stop_reason: str | None = None,
     content: Any = None,
     impacts: dict[str, Any] | None = None,
+    model_served: str | None = None,
+    route: str | None = None,
+    ttft_ms: float | None = None,
+    tps: float | None = None,
+    chunk_count: int | None = None,
+    t0_offset_ms: float | None = None,
 ) -> dict[str, Any]:
     """Log the response half: status, duration, usage split, assistant fingerprint.
 
     ``impacts`` (green metrics) is attached only when the caller computed it, so
     flag-off responses carry no green field at all.
+
+    Schema v2 observations, included only when actually observed (absent, not
+    zero): ``model_served`` (the effective upstream model), ``route``, stream
+    timings ``ttft_ms``/``tps``/``chunk_count``, and the timeline anchor
+    ``t0_offset_ms``.
     """
     usage = usage or {}
     entry = _envelope(
         "response", run_label=run_label, session_key=session_key,
         session_source=session_source, request_id=request_id,
+        span_id=new_span_id(), t0_offset_ms=t0_offset_ms,
     )
     entry.update({
         "status": int(status),
@@ -206,6 +259,16 @@ def response_event(
         "stop_reason": stop_reason,
         "content": _content_profile(content),
     })
+    if model_served:
+        entry["model_served"] = model_served
+    if route:
+        entry["route"] = route
+    if ttft_ms is not None:
+        entry["ttft_ms"] = round(float(ttft_ms), 3)
+    if tps is not None:
+        entry["tps"] = round(float(tps), 3)
+    if chunk_count is not None:
+        entry["chunk_count"] = int(chunk_count)
     if impacts is not None:
         entry["impacts"] = impacts
     _append(ledger_dir, session_key, entry)
@@ -221,11 +284,13 @@ def error_event(
     run_label: str,
     stage: str,
     message: Any,
+    t0_offset_ms: float | None = None,
 ) -> dict[str, Any]:
     """Log a stage failure: the stage that failed and why."""
     entry = _envelope(
         "error", run_label=run_label, session_key=session_key,
         session_source=session_source, request_id=request_id,
+        span_id=new_span_id(), t0_offset_ms=t0_offset_ms,
     )
     entry.update({"stage": stage, "message": str(message)[:1000]})
     _append(ledger_dir, session_key, entry)
@@ -309,7 +374,8 @@ def read_session(ledger_dir: Path | str, key: str) -> dict[str, Any] | None:
                 if session_key is None and entry.get("session_key"):
                     session_key = entry.get("session_key")
                     session_source = entry.get("session_source")
-                    run_label = entry.get("run_label") or ""
+                if run_label == "" and entry.get("run_label"):
+                    run_label = entry["run_label"]
                 entries.append(entry)
     except OSError:
         return None
@@ -365,6 +431,7 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
     first_ts = last_ts = None
     run_label: str | None = None
     responses = []
+    request_models = _request_model_map(entries)
     for entry in entries:
         kind = entry.get("type")
         if kind == "request":
@@ -373,7 +440,7 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
             models.setdefault(model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
         elif kind == "response":
             responses.append(entry)
-            model = _model_for(entry, entries)
+            model = request_models.get(str(entry.get("request_id")), "")
             if model:
                 bucket = models.setdefault(model, {"input": 0, "output": 0, "cache_read": 0, "cache_write": 0})
                 usage = entry.get("usage") or {}
@@ -431,6 +498,8 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
     router = {"decisions": 0, "by_reason": {}, "by_tier": {},
               "warmth_applied": 0, "stickiness_applied": 0, "escalations": 0,
               "fallbacks": 0}
+    classify_latencies: list[float] = []
+    confidences: list[float] = []
     for entry in entries:
         if entry.get("type") != "stage" or entry.get("feature") != "router":
             continue
@@ -448,15 +517,44 @@ def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
             router["escalations"] += 1
         if provenance.get("fallback_used"):
             router["fallbacks"] += 1
+        if isinstance(provenance.get("classify_latency_ms"), (int, float)):
+            classify_latencies.append(float(provenance["classify_latency_ms"]))
+        if isinstance(provenance.get("confidence"), (int, float)):
+            confidences.append(float(provenance["confidence"]))
+    if classify_latencies:
+        router["classify_latency_ms_p50"] = round(_percentile(sorted(classify_latencies), 0.5), 1)
+        router["classify_latency_ms_mean"] = round(sum(classify_latencies) / len(classify_latencies), 1)
+    if confidences:
+        router["confidence_mean"] = round(sum(confidences) / len(confidences), 4)
+
+    # Timing rollup over response events: observed stream TTFT percentiles,
+    # with honesty counts (how many responses never reported one).
+    ttfts = sorted(float(e["ttft_ms"]) for e in responses if isinstance(e.get("ttft_ms"), (int, float)))
+    timing = {
+        "ttft_p50_ms": round(_percentile(ttfts, 0.5), 1) if ttfts else None,
+        "responses_with_ttft": len(ttfts),
+        "responses_total": len(responses),
+    }
     return {
         "requests": requests,
         "models": {model: counts for model, counts in models.items() if counts and any(counts.values())},
         "wall_clock_seconds": wall_clock,
         "compression": compression,
         "green": green,
+        "timing": timing,
+        "router": router,
         "errors": errors,
         "run_label": run_label or "",
     }
+
+
+def _percentile(sorted_values: list[float], q: float) -> float | None:
+    """Nearest-rank percentile of an already sorted list (trajectory timing module)."""
+    if not sorted_values:
+        return None
+    import math
+
+    return sorted_values[max(0, math.ceil(q * len(sorted_values)) - 1)]
 
 
 def _model_for(response: dict[str, Any], entries: list[dict[str, Any]]) -> str:
@@ -465,3 +563,11 @@ def _model_for(response: dict[str, Any], entries: list[dict[str, Any]]) -> str:
         if entry.get("type") == "request" and entry.get("request_id") == request_id and entry.get("model"):
             return str(entry["model"])
     return ""
+
+
+def _request_model_map(entries: list[dict[str, Any]]) -> dict[str, str]:
+    """request_id -> client-facing model, one pass (summarize is O(n), not O(n^2))."""
+    return {str(e["request_id"]): str(e["model"])
+            for e in entries if e.get("type") == "request" and e.get("request_id") and e.get("model")}
+
+
