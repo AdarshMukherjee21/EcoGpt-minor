@@ -4,4 +4,5 @@ __pycache__/
 data/*
 !data/green_factors.json
 !data/ecologits/
+!data/ikp/
 data/claude-desktop-backup/

@@ -21,6 +21,7 @@ from . import claude_config
 from . import claude_desktop
 from . import features as features_settings
 from . import green as green_metrics
+from . import green_estimate as green_estimation
 from . import green_impact
 from . import headroom_settings
 from . import ledger
@@ -76,6 +77,24 @@ class SettingsUpdate(BaseModel):
 
 class GreenFactorsUpdate(BaseModel):
     overrides: dict[str, Optional[dict[str, Any]]]
+
+
+class GreenModelUpdate(BaseModel):
+    """Expert-mode per-model profile (active/total B, TPS/TTFT, datacenter scenario)."""
+    params: Optional[dict[str, Any]] = None
+    tps: Optional[float] = None
+    ttft: Optional[float] = None
+    pue: Optional[float] = None
+    wue_onsite: Optional[float] = None
+    country: Optional[str] = None
+    electricity: Optional[dict[str, Any]] = None
+
+
+class GreenEstimateStart(BaseModel):
+    judge: str
+    sample_n: int = 28
+    pace_s: float = 3.2
+    max_tokens: int = 1024
 
 
 class HeadroomUpdate(BaseModel):
@@ -151,8 +170,11 @@ def create_app(
     sidecar_transport: httpx.AsyncBaseTransport | None = None,
     manage_sidecar: bool = True,
     sidecar_log_path: Path = SIDECAR_LOG_PATH,
+    estimation_path: Optional[Path] = None,
+    estimation_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     settings = load_settings(settings_path)
+    estimation_path = Path(estimation_path or green_estimation.ESTIMATION_STATE_PATH)
     usage_log.init_db(db_path)
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0), transport=upstream_transport)
     sidecar = Sidecar(sidecar_log_path)
@@ -210,6 +232,9 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        # estimation runs left "running" by a restart become resumable pauses
+        for model in green_estimation.reset_stale_runs(estimation_path):
+            logger.info("estimation for '%s' was interrupted by the restart; resumable via continue", model)
         start_sidecar()
         yield
         if state["sidecar_client"] is not None:
@@ -1141,6 +1166,10 @@ def create_app(
             )
         return {"models": models, "attribution": green_metrics.attribution()}
 
+    def write_green_overrides(merged: dict[str, dict[str, Any]]) -> None:
+        GREEN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
+        GREEN_OVERRIDES_PATH.write_text(json.dumps({"models": merged}, indent=2), encoding="utf-8")
+
     @app.put("/api/green/factors")
     async def green_factors_update(update: GreenFactorsUpdate):
         merged = green_metrics.load_overrides()
@@ -1183,8 +1212,7 @@ def create_app(
                 return error_json(400, f"{key}: provide wh_per_output_token or active_b/total_b",
                                   "invalid_request_error")
             merged[key] = parsed
-        GREEN_OVERRIDES_PATH.parent.mkdir(parents=True, exist_ok=True)
-        GREEN_OVERRIDES_PATH.write_text(json.dumps({"models": merged}, indent=2), encoding="utf-8")
+        write_green_overrides(merged)
         return {"ok": True, "overrides": merged}
 
     @app.post("/api/green/models/match")
@@ -1196,6 +1224,266 @@ def create_app(
         matches = {key: green_impact.catalogue_match(key) is not None for key in keys}
         revision = green_impact.ECOLOGITS_REVISION
         return {"ok": True, "revision": revision, "matches": matches}
+
+    # -- per-model expert profiles (EcoLogits Calculator expert-mode style) --------
+
+    def _model_profile(model: str) -> dict[str, Any]:
+        """Everything the per-model card renders: match info, editable values,
+        effective datacenter scenario, estimation-state summary."""
+        config = green_impact.model_config(model)
+        resolution = green_impact.resolve_model(model)
+        entry = config.get("entry") or {}
+        catalogue_info = resolution.get("catalogue") or (
+            green_impact.catalogue_match(model) if resolution["params"] is None else None)
+
+        # effective params shown on the card (the card edits its own override; the
+        # catalogue/factor-table values are the prefilled defaults otherwise)
+        params = (config["params"] and
+                  {"active_b": config["params"]["active_b"], "total_b": config["params"]["total_b"]})
+        if params is None and catalogue_info:
+            params = {"active_b": catalogue_info["active_b"], "total_b": catalogue_info["total_b"]}
+        if params is None:
+            factors = green_metrics.load_factors()
+            key = green_metrics.model_key(model, factors)
+            row_params = green_impact._params_from_row((factors.get("models") or {}).get(key) or {}) if key else None
+            params = ({"active_b": row_params["active_b"], "total_b": row_params["total_b"]}
+                      if row_params else None)
+
+        # configured TPS/TTFT preference: override > catalogue deployment > none
+        catalogue_deploy = (catalogue_info or {}).get("deployment") or {}
+        tps = config.get("tps")
+        if tps is None:
+            tps = catalogue_deploy.get("tps")
+        ttft = config.get("ttft")
+        if ttft is None:
+            ttft = catalogue_deploy.get("ttft")
+
+        # effective datacenter scenario: per-model fields override global region
+        g = settings_green_for_model(model)
+        electricity = config.get("electricity") or None
+        elec_effective, elec_source = green_impact.electricity(g["country"], override=electricity)
+        estimate = green_estimation.status_of(model, estimation_path)
+        estimate = {
+            key: estimate.get(key) for key in
+            ("status", "step", "judge", "sample_n", "complete_n", "accuracy",
+             "effective_b", "error", "updated_at", "per_tier", "warning")
+        } if estimate else {"status": "idle"}
+        estimate["running"] = green_estimation.is_running(model, estimation_path)
+        return {
+            "model": model,
+            "exposed": model in settings.exposed_models,
+            "basis": resolution["basis"],
+            "params_source": resolution["param_source"],
+            "known": resolution["mode"] != "unconfigured" and resolution["params"] is not None,
+            "params": params,
+            "tps": tps,
+            "ttft": ttft,
+            "catalogue_match": bool(catalogue_info),
+            "catalogue_warnings": (catalogue_info or {}).get("warnings") or [],
+            "factor_row": green_metrics.model_key(model, green_metrics.load_factors()) is not None,
+            "mode": resolution["mode"],
+            "datacenter": {
+                "country": config.get("country") or g["country"],
+                "pue": config.get("pue") or g["pue_mean"],
+                "wue_onsite": config.get("wue_onsite") or 0.0,
+                "electricity": elec_effective,
+                "electricity_source": elec_source,
+                "per_model_overrides": {
+                    "pue": config.get("pue") is not None,
+                    "wue_onsite": config.get("wue_onsite") is not None,
+                    "country": config.get("country") is not None,
+                    "electricity": config.get("electricity") is not None,
+                },
+            },
+            "estimate": estimate,
+        }
+
+    def settings_green_for_model(model: str) -> dict[str, Any]:
+        """Region scenario for a model card (global settings; per-model overlays
+        are already separated into config above)."""
+        g = dict(settings.green)
+        return {
+            "country": str(g.get("region_country", "WOR")),
+            "pue_mean": float(g.get("region_pue_mean", 1.15)),
+            "grid_mean": float(g.get("region_grid_gco2_mean", 260.0)),
+        }
+
+    def _estimation_upstream(model: str) -> tuple[str, str]:
+        provider = settings.provider_for(model)
+        return upstream_base(provider["url"]), settings.effective_key(provider)
+
+    @app.get("/api/green/models")
+    async def green_models_roster():
+        models: list[str] = list(settings.exposed_models)
+        for key in green_metrics.load_overrides():
+            if key not in models:
+                models.append(key)
+        for key in green_estimation.load_state(estimation_path):
+            if key not in models:
+                models.append(key)
+        return {"models": [_model_profile(model) for model in sorted(models)]}
+
+    @app.get("/api/green/models/{model}/estimate")
+    async def green_model_estimate_status(model: str):
+        record = green_estimation.status_of(model, estimation_path)
+        if not record:
+            return {"status": "idle"}
+        record = dict(record)
+        record["running"] = green_estimation.is_running(model, estimation_path)
+        return record
+
+    @app.get("/api/green/models/{model}")
+    async def green_model_profile(model: str):
+        return _model_profile(model)
+
+    @app.put("/api/green/models/{model}")
+    async def green_model_update(model: str, update: GreenModelUpdate):
+        merged = green_metrics.load_overrides()
+        entry = dict(merged.get(model) or {})
+        had_params = bool(entry.get("params"))
+        entry.pop("_overridden", None)
+
+        if update.params is not None:
+            try:
+                active = float(update.params.get("active_b"))
+                total = float(update.params.get("total_b"))
+            except (TypeError, ValueError):
+                return error_json(400, f"{model}: active_b/total_b must be numbers", "invalid_request_error")
+            if active <= 0 or total <= 0:
+                return error_json(400, f"{model}: active_b/total_b must be positive", "invalid_request_error")
+            if active > total:
+                return error_json(400, f"{model}: active_b must not exceed total_b", "invalid_request_error")
+            entry["params"] = {"active_b": active, "total_b": total}
+            if entry.get("basis") not in ("user-override", "ikp_estimate"):
+                entry["basis"] = "user-override"
+            elif entry.get("basis") == "ikp_estimate":
+                entry["basis"] = "user-override"  # a manual edit supersedes the estimate
+
+        def opt_float(field: str, minimum: float) -> tuple[Optional[float], Optional[str]]:
+            """Returns (value, error); None value means 'not provided'."""
+            value = getattr(update, field)
+            if value is None:
+                return None, None
+            try:
+                parsed = float(value)
+            except (TypeError, ValueError):
+                return None, f"{model}: {field} must be a number"
+            if parsed < minimum:
+                return None, f"{model}: {field} must be >= {minimum}"
+            return parsed, None
+
+        for field, minimum in (("tps", 0.0), ("ttft", 0.0), ("pue", 1.0), ("wue_onsite", 0.0)):
+            value, err = opt_float(field, minimum)
+            if err:
+                return error_json(400, str(err), "invalid_request_error")
+            if value is None:
+                entry.pop(field, None)  # explicit clear
+                continue
+            entry[field] = value
+
+        if update.country is not None:
+            zone = update.country.strip().upper()
+            if zone and len(zone) > 8:
+                return error_json(400, f"{model}: country must be a short region code", "invalid_request_error")
+            entry["country"] = zone or None
+
+        if update.electricity is not None:
+            electricity = {}
+            for field in ("gwp", "adpe", "pe", "wue"):
+                value = update.electricity.get(field)
+                try:
+                    electricity[field] = float(value)
+                except (TypeError, ValueError):
+                    continue
+            entry["electricity"] = electricity or None
+
+        # drop explicit None/empty artifacts so the entry stays clean
+        entry = {key: value for key, value in entry.items() if value is not None}
+        if not entry:
+            merged.pop(model, None)
+        else:
+            entry.setdefault("basis", "user-override")
+            entry["updated_at"] = time.time()
+            merged[model] = entry
+        write_green_overrides(merged)
+        return {"ok": True, "profile": _model_profile(model)}
+
+    @app.put("/api/green/models/{model}/params")
+    async def green_model_params_clear(model: str):
+        """Remove the per-model params override (back to table/catalogue resolution)."""
+        merged = green_metrics.load_overrides()
+        entry = dict(merged.get(model) or {})
+        entry.pop("params", None)
+        entry = {key: value for key, value in entry.items() if value is not None}
+        if entry:
+            merged[model] = entry
+        else:
+            merged.pop(model, None)
+        write_green_overrides(merged)
+        return {"ok": True, "profile": _model_profile(model)}
+
+    # -- estimation job lifecycle --------------------------------------------------
+
+    @app.post("/api/green/models/{model}/estimate")
+    async def green_model_estimate_start(model: str, start: GreenEstimateStart):
+        if green_estimation.is_running(model, estimation_path):
+            return error_json(409, f"estimation for '{model}' is already running", "invalid_request_error")
+        judge = (start.judge or "").strip()
+        if not judge:
+            return error_json(400, "a judge model is required", "invalid_request_error")
+        # self-judging is allowed (single-model setups) but biased: the UI warns.
+        if start.max_tokens < 64 or start.max_tokens > 32768:
+            return error_json(400, "max_tokens must be between 64 and 32768", "invalid_request_error")
+        pace = max(0.0, float(start.pace_s))
+        try:
+            base, key = _estimation_upstream(model)
+            record = await green_estimation.start(
+                model, judge=judge, sample_n=int(start.sample_n),
+                pace_s=pace, max_tokens=int(start.max_tokens),
+                base=base, key=key, path=estimation_path,
+                transport=estimation_transport)
+        except ValueError as exc:
+            return error_json(400, str(exc), "invalid_request_error")
+        return {"ok": True, "estimate": record}
+
+    @app.post("/api/green/models/{model}/estimate/continue")
+    async def green_model_estimate_continue(model: str):
+        if green_estimation.is_running(model, estimation_path):
+            return error_json(409, f"estimation for '{model}' is already running", "invalid_request_error")
+        try:
+            base, key = _estimation_upstream(model)
+            record = await green_estimation.continue_run(
+                model, base=base, key=key, path=estimation_path,
+                transport=estimation_transport)
+        except LookupError as exc:
+            return error_json(404, str(exc), "not_found_error")
+        except RuntimeError as exc:
+            return error_json(400, str(exc), "invalid_request_error")
+        return {"ok": True, "estimate": record}
+
+    @app.post("/api/green/models/{model}/estimate/stop")
+    async def green_model_estimate_stop(model: str):
+        record = await green_estimation.stop(model, path=estimation_path)
+        return {"ok": True, "estimate": record}
+
+    @app.post("/api/green/models/{model}/estimate/apply")
+    async def green_model_estimate_apply(model: str):
+        record = green_estimation.load_state(estimation_path).get(model)
+        if not record or record.get("status") != "done" or not record.get("effective_b"):
+            return error_json(400, f"'{model}' has no completed estimation to apply", "invalid_request_error")
+        value = float(record["effective_b"])
+        merged = green_metrics.load_overrides()
+        entry = dict(merged.get(model) or {})
+        entry["params"] = {"active_b": value, "total_b": value}
+        entry["basis"] = "ikp_estimate"
+        entry["evidence"] = (f"IKP {record.get('complete_n')}/{record.get('sample_n')} probes; "
+                             f"accuracy {record.get('accuracy', 0):.1%}; knowledge-equivalent "
+                             "capacity, not a verified weight count")
+        entry["updated_at"] = time.time()
+        merged[model] = entry
+        write_green_overrides(merged)
+        return {"ok": True, "profile": _model_profile(model)}
+
 
     @app.put("/api/green")
     async def green_update(update: HeadroomUpdate):

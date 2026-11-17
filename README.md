@@ -71,6 +71,22 @@ observed them, TPS and time-to-first-token, via EcoLogits'
   exact match in the pinned EcoLogits catalogue (`data/ecologits/`, committed
   for reproducibility) → `unconfigured_model`. No fuzzy matches: a provider
   serving a model need not own it.
+- **Per-model expert profiles** (Settings → Green metrics): an EcoLogits
+  Calculator expert-mode card per exposed model — Active/Total parameters (B),
+  average TPS and TTFT (used only when a stream did not observe them), plus the
+  datacenter scenario (PUE, on-site WUE, location, and grid-mix GHG/abiotic/
+  primary/water factors). Blank datacenter fields fall back to the region
+  settings and the EcoLogits electricity dataset (displayed with their source).
+- **Estimation for unknown models**: a stratified IKP probe run (7 tiers,
+  public calibration from `data/ikp/`, judge model of your choice) estimates a
+  model's knowledge-equivalent size — free-tier friendly (adjustable pacing
+  between calls, exponential retry with Retry-After support for HTTP 429) and
+  fully resumable: per-probe progress persists to `data/green_estimation.json`,
+  a stop/failure/crash leaves a resumable state (resume via the manual
+  **Continue** button, never a rerun from scratch), and an estimate is applied
+  only when explicitly accepted (**Apply estimate** records an explicit
+  `ikp_estimate` scenario — knowledge-equivalent capacity is not a verified
+  weight count).
 - **Dual path**: a row with a `wh_per_output_token` override keeps the original
   factor arithmetic (`proxy/green.py`) — overrides keep their meaning. Rows
   with parameter counts use the EcoLogits core. Input and cache-read tokens are
@@ -91,7 +107,8 @@ observed them, TPS and time-to-first-token, via EcoLogits'
 ## Status / next phases
 
 - Done: proxy pipeline, all three ingress formats, Claude Code + Desktop
-  one-click config, green metrics, session ledger, dashboard.
+  one-click config, green metrics (EcoLogits core, per-model expert profiles,
+  IKP estimation), session ledger, dashboard.
 - TODO: formal cost model (pricing tables — cost is currently scraped from
-  gateway headers), router/compression config polish, green factor editor +
-  location/grid detection, ecoGPT chat harness integration.
+  gateway headers), router/compression config polish, ecoGPT chat harness
+  integration.

@@ -49,6 +49,16 @@ main { max-width: 1180px; margin: 0 auto; padding: 18px 20px 60px; }
 .chip .sub { font-size: 11px; color: var(--muted); }
 .chip.green { border-color: #1d4428; } .chip.green .value { color: var(--accent); }
 .chip.blue { border-color: #1b3a5c; } .chip.blue .value { color: var(--accent2); }
+/* per-model green profile cards */
+.card-inlist { border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: var(--panel); }
+.card-inlist summary { cursor: pointer; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.gm-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; margin: 10px 0; }
+.gm-grid label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
+.gm-grid input, .gm-grid select { width: 100%; }
+.progress { height: 8px; background: #10151c; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin: 6px 0 2px; }
+.progress .bar { height: 100%; background: var(--accent, #3fb950); transition: width .4s; }
+.btnrow.wrap { flex-wrap: wrap; gap: 6px; }
+.btnrow label { font-size: 11px; color: var(--muted); display: flex; flex-direction: column; gap: 3px; }
 
 /* charts */
 .charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; margin-bottom: 16px; }
@@ -243,15 +253,11 @@ details.adv summary { cursor: pointer; color: var(--muted); font-size: 13px; }
         <div class="btnrow"><button class="primary" id="green-save">Save region &amp; knobs</button><span id="green-msg" class="feedback"></span></div>
       </div>
       <div class="card">
-        <h2>Model factors</h2>
-        <p class="muted">Wh per output token (min / mean / max) used for the energy estimate. Edited rows override the bundled factor table and are marked green — an overridden row keeps the factor arithmetic path. Active/Total parameters (billions) drive the pinned <code>ecologits==0.10.2</code> compute core for rows without a factor override; Active must not exceed Total. Blank a row and save applies bundled values again. Water, ADPe and primary energy always display with their provenance caption (region scenario + catalogue revision).</p>
-        <div class="tablescroll"><table>
-          <thead><tr><th>Model</th><th>Basis</th><th>Path</th><th class="num">active B</th><th class="num">total B</th><th class="num">min</th><th class="num">mean</th><th class="num">max</th><th></th></tr></thead>
-          <tbody id="factors-rows"></tbody>
-        </table></div>
-        <div class="btnrow"><button class="primary" id="factors-save">Save model factors</button>
-          <button id="green-match">Refresh EcoLogits catalogue</button>
-          <span id="factors-msg" class="feedback"></span></div>
+        <h2>Per-model green profile</h2>
+        <p class="muted">EcoLogits Calculator expert-mode inputs for each exposed model: model parameters (Active/Total B), published averages (TPS, TTFT) and the datacenter scenario (PUE, on-site WUE, location, grid mix). Values prefilled from the pinned EcoLogits catalogue where available; blank datacenter fields fall back to the region scenario above (grid water comes from the electricity dataset, shown per model with its source).</p>
+        <p class="muted">If a model's parameters are <b>not</b> known, either <b>Estimate</b> them (stratified public IKP probes against the gateway — paced for free-tier rate limits, auto-retry, resumable: if it stops you can press <b>Continue</b> later without rerunning from scratch) or enter values <b>manually</b>. An estimate is a knowledge-equivalent scenario, <b>not</b> a verified weight count — it is applied only when you press <b>Apply estimate</b>. Water, ADPe and primary energy always display together with their provenance caption.</p>
+        <div id="green-models-list"></div>
+        <span id="green-models-msg" class="feedback"></span>
       </div>
       <div class="card"><h2>Attribution</h2><ul id="green-attribution" class="muted" style="margin:0;padding-left:18px"></ul></div>
     </div>
@@ -648,70 +654,216 @@ $("headroom-save").onclick = async () => {
 };
 
 /* ---------------- green tab ---------------- */
+const ESTIMATE_LABEL = { idle: "not estimated", running: "estimating…", paused: "paused — continue to resume",
+                         failed: "failed — continue to retry", done: "estimate ready" };
+
 async function loadGreenSettings() {
   const data = await api("/api/green");
   renderFormInto("green-form", data.schema, data.values);
   $("green-attribution").innerHTML = (data.attribution || []).map((a) => `<li>${esc(a)}</li>`).join("");
-  const factors = await api("/api/green/factors");
-  $("factors-rows").innerHTML = factors.models.map((m) => {
-    const wpt = m.wh_per_output_token || {};
-    const params = m.params || {};
-    return `<tr class="factor-grid ${m.overridden ? "overridden" : ""}" data-factor="${esc(m.model)}">
-      <td title="${esc(m.basis || "")}">${esc(m.model)}${m.overridden ? ' <span class="ok">•</span>' : ""}</td>
-      <td class="muted">${esc(m.basis || "–")}</td>
-      <td class="muted">${esc(m.mode || "–")}</td>
-      <td><input type="number" step="any" data-activeb value="${params.active_b ?? ""}"></td>
-      <td><input type="number" step="any" data-totalb value="${params.total_b ?? ""}"></td>
-      <td><input type="number" step="any" data-wmin value="${wpt.min ?? ""}"></td>
-      <td><input type="number" step="any" data-wmean value="${wpt.mean ?? ""}"></td>
-      <td><input type="number" step="any" data-wmax value="${wpt.max ?? ""}"></td>
-      <td><button title="Reset to bundled values" data-freset>reset</button></td>
-    </tr>`;
-  }).join("");
-  document.querySelectorAll("[data-freset]").forEach((btn) => {
-    btn.onclick = () => {
-      const tr = btn.closest("tr");
-      ["[data-wmin]", "[data-wmean]", "[data-wmax]", "[data-activeb]", "[data-totalb]"].forEach((sel) => {
-        tr.querySelector(sel).value = "";
-      });
+  await renderGreenModels();
+}
+
+function gmInput(name, label, value, hint) {
+  return `<label>${esc(label)}<input type="number" step="any" data-gm="${name}" value="${value ?? ""}"
+    placeholder="${hint ?? ""}"></label>`;
+}
+
+function greenModelCard(p, profiles) {
+  const dc = p.datacenter || {};
+  const est = p.estimate || { status: "idle" };
+  const params = p.params || {};
+  const elec = dc.electricity || {};
+  const open = est.status === "running" || est.status === "paused" || est.status === "failed" ? " open" : "";
+  const pct = est.sample_n ? Math.round(100 * (est.complete_n || 0) / est.sample_n) : 0;
+  const knownBadge = p.known
+    ? `<span class="ok" title="source: ${esc(p.params_source || "")}">✓ params known (${esc(p.basis || "?")})</span>`
+    : `<span class="bad">no parameters known</span>`;
+  const stateChip = `<span class="muted" data-est-state>· ${esc(ESTIMATE_LABEL[est.status] || est.status)}</span>`;
+  const source = p.catalogue_match
+    ? `EcoLogits catalogue exact match${p.catalogue_warnings && p.catalogue_warnings.length ? " · warnings: " + esc(p.catalogue_warnings.join(", ")) : ""}`
+    : (p.factor_row ? "bundled factor table" : "not in the pinned catalogue");
+  const judgeOptions = profiles.filter((q) => q.exposed && q.model !== p.model).map((q) => q.model);
+  const judgeChoices = judgeOptions.length
+    ? judgeOptions
+    : [p.model]; // single-model setups may self-judge (biased; warned in UI)
+
+  const progress = (est.status === "running" || est.status === "paused" || est.status === "failed")
+    ? `<div class="progress" data-est-progress><div class="bar" style="width:${pct}%"></div></div>
+       <div class="muted" style="font-size:11px" data-est-step>${esc(est.step || "")} · ${est.complete_n || 0}/${est.sample_n || 0} probes · ${pct}%</div>
+       ${est.error ? `<div class="bad" style="font-size:11px">${esc(est.error)}</div>` : ""}`
+    : "";
+
+  const estimateControls = `
+    <details class="adv" data-estimate-box ${est.status !== "idle" ? "open" : ""}>
+      <summary>${p.known ? "Re-estimate / override parameters" : "Estimate these values (or enter them manually above)"}</summary>
+      <div class="btnrow wrap">
+        <label>Judge model <select data-est-judge>${judgeChoices.map((m) => `<option>${esc(m)}${judgeChoices.length === 1 && m === p.model ? " (self-judged, biased)" : ""}</option>`).join("")}</select></label>
+        <label>Probes <input type="number" data-est-n min="14" max="140" step="7" value="28"></label>
+        <label>Seconds between calls <input type="number" data-est-pace min="0" max="60" step="0.2" value="3.2"></label>
+        <label>Max output tokens <input type="number" data-est-tokens min="64" max="32768" step="64" value="1024"></label>
+      </div>
+      <div class="btnrow">
+        ${est.status === "paused" || est.status === "failed"
+          ? '<button class="primary" data-est-continue>▶ Continue</button>' : ""}
+        ${est.status === "running"
+          ? '<button data-est-stop>Stop</button>'
+          : '<button data-est-start>Start new run</button>'}
+        ${est.status === "done" ? `<button class="primary" data-est-apply>Apply estimate (${sig(est.effective_b)} B)</button>` : ""}
+        <span class="feedback" data-est-msg></span>
+      </div>
+      ${est.status === "done" && est.warning ? `<p class="muted" style="font-size:11px">${esc(est.warning)} · accuracy ${est.accuracy != null ? (est.accuracy * 100).toFixed(1) : "?"}%</p>` : ""}
+      ${progress}
+    </details>`;
+
+  return `<details class="card-inlist" data-gm-model="${esc(p.model)}"${open}>
+    <summary><b>${esc(p.model)}</b> ${knownBadge} ${stateChip}
+      <span class="muted" style="font-size:11px">${esc(source)}</span></summary>
+    <div class="gm-grid">
+      ${gmInput("active_b", "Active parameters (B)", params.active_b)}
+      ${gmInput("total_b", "Total parameters (B)", params.total_b)}
+      ${gmInput("tps", "Average TPS", p.tps)}
+      ${gmInput("ttft", "Average TTFT (s)", p.ttft)}
+      ${gmInput("pue", "PUE", dc.pue, "region default")}
+      ${gmInput("wue_onsite", "WUE on-site (L/kWh)", dc.wue_onsite ? dc.wue_onsite : "", "0 = region only")}
+      ${`<label>Location (country)<input data-gm="country" value="${dc.country ?? ""}"></label>`}
+      ${gmInput("gwp", "GHG (kgCO2eq/kWh)", elec.gwp, "from region")}
+      ${gmInput("adpe", "Abiotic (kgSBeq/kWh)", elec.adpe, "from region")}
+      ${gmInput("pe", "Primary (MJ/kWh)", elec.pe, "from region")}
+      ${gmInput("wue", "Water (L/kWh)", elec.wue, "from region")}
+    </div>
+    <p class="muted" style="font-size:11px">Datacenter scenario: blank fields use the region settings / electricity dataset (${esc(dc.electricity_source || (p.factor_row ? "bundled table" : "region"))}).</p>
+    <div class="btnrow">
+      <button class="primary" data-gm-save>Save profile</button>
+      ${p.basis === "ikp_estimate" ? '<button data-gm-clear-params>Clear params</button>' : ""}
+      <span class="feedback" data-gm-msg></span>
+    </div>
+    ${estimateControls}
+  </details>`;
+}
+
+async function renderGreenModels() {
+  const data = await api("/api/green/models");
+  const profiles = data.models || [];
+  $("green-models-list").innerHTML =
+    profiles.map((p) => greenModelCard(p, profiles)).join("") || "<p class='muted'>No exposed models configured yet.</p>";
+
+  document.querySelectorAll("[data-gm-model]").forEach((card) => {
+    const model = card.dataset.gmModel;
+    const readValue = (name) => {
+      const input = card.querySelector(`[data-gm="${name}"]`);
+      const raw = input.value.trim();
+      return raw === "" ? null : raw;
+    };
+    const msg = () => card.querySelector("[data-gm-msg]");
+
+    card.querySelector("[data-gm-save]").onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}`, { method: "PUT", body: JSON.stringify({
+          params: (readValue("active_b") || readValue("total_b"))
+            ? { active_b: readValue("active_b"), total_b: readValue("total_b") } : null,
+          tps: readValue("tps"), ttft: readValue("ttft"),
+          pue: readValue("pue"), wue_onsite: readValue("wue_onsite"),
+          country: card.querySelector('[data-gm="country"]').value.trim(),
+          electricity: (readValue("gwp") || readValue("adpe") || readValue("pe") || readValue("wue"))
+            ? { gwp: readValue("gwp"), adpe: readValue("adpe"), pe: readValue("pe"), wue: readValue("wue") } : null,
+        }) });
+        msg().textContent = "Saved — affects future requests"; msg().className = "feedback ok";
+        await renderGreenModels();
+      } catch (err) { msg().textContent = err.message; msg().className = "feedback bad"; }
+      refreshDashboardIfVisible();
+    };
+
+    const clearBtn = card.querySelector("[data-gm-clear-params]");
+    if (clearBtn) clearBtn.onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}/params`, { method: "PUT", body: "{}" });
+        msg().textContent = "Params cleared — table/catalogue apply again"; msg().className = "feedback ok";
+        await renderGreenModels();
+      } catch (err) { msg().textContent = err.message; msg().className = "feedback bad"; }
+    };
+
+    const estBox = card.querySelector("[data-estimate-box]");
+    if (!estBox) return;
+    const estMsg = () => card.querySelector("[data-est-msg]");
+    const estimateOpts = () => ({
+      judge: card.querySelector("[data-est-judge]").value.split(" (")[0],
+      sample_n: parseInt(card.querySelector("[data-est-n]").value, 10),
+      pace_s: parseFloat(card.querySelector("[data-est-pace]").value),
+      max_tokens: parseInt(card.querySelector("[data-est-tokens]").value, 10),
+    });
+
+    const startBtn = card.querySelector("[data-est-start]");
+    if (startBtn) startBtn.onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}/estimate`, { method: "POST", body: JSON.stringify(estimateOpts()) });
+        estMsg().textContent = "Estimation started"; estMsg().className = "feedback ok";
+        pollEstimate(model);
+      } catch (err) { estMsg().textContent = err.message; estMsg().className = "feedback bad"; }
+    };
+
+    const continueBtn = card.querySelector("[data-est-continue]");
+    if (continueBtn) continueBtn.onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}/estimate/continue`, { method: "POST", body: "{}" });
+        estMsg().textContent = "Resuming from where it stopped"; estMsg().className = "feedback ok";
+        pollEstimate(model);
+      } catch (err) { estMsg().textContent = err.message; estMsg().className = "feedback bad"; }
+    };
+
+    const stopBtn = card.querySelector("[data-est-stop]");
+    if (stopBtn) stopBtn.onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}/estimate/stop`, { method: "POST", body: "{}" });
+        estMsg().textContent = "Stopped — you can continue later; progress is kept"; estMsg().className = "feedback ok";
+        await renderGreenModels();
+      } catch (err) { estMsg().textContent = err.message; estMsg().className = "feedback bad"; }
+    };
+
+    const applyBtn = card.querySelector("[data-est-apply]");
+    if (applyBtn) applyBtn.onclick = async () => {
+      try {
+        await api(`/api/green/models/${encodeURIComponent(model)}/estimate/apply`, { method: "POST", body: "{}" });
+        estMsg().textContent = "Estimate applied as an explicit scenario"; estMsg().className = "feedback ok";
+        await renderGreenModels();
+      } catch (err) { estMsg().textContent = err.message; estMsg().className = "feedback bad"; }
+      refreshDashboardIfVisible();
     };
   });
+
+  // kick polling for anything already running (e.g. another tab started it)
+  profiles.filter((p) => p.estimate && p.estimate.running).forEach((p) => pollEstimate(p.model));
 }
+
+function refreshDashboardIfVisible() {
+  if ($("view-dashboard").classList.contains("active")) loadDashboard();
+}
+
+const _estTimers = {};
+function pollEstimate(model) {
+  clearTimeout(_estTimers[model]);
+  _estTimers[model] = setTimeout(async () => {
+    let estimate;
+    try { estimate = await api(`/api/green/models/${encodeURIComponent(model)}/estimate`); }
+    catch { return; }
+    const card = document.querySelector(`[data-gm-model="${CSS.escape(model)}"]`);
+    if (card) {
+      const pct = estimate.sample_n ? Math.round(100 * (estimate.complete_n || 0) / estimate.sample_n) : 0;
+      const bar = card.querySelector("[data-est-progress]");
+      if (bar) bar.innerHTML = `<div class="bar" style="width:${pct}%"></div>`;
+      const step = card.querySelector("[data-est-step]");
+      if (step) step.textContent = `${estimate.step || ""} · ${estimate.complete_n || 0}/${estimate.sample_n || 0} probes · ${pct}%`;
+      if (estimate.status === "running") { pollEstimate(model); return; }
+    }
+    if (estimate.status && estimate.status !== "idle") await renderGreenModels();
+  }, 2000);
+}
+
 $("green-save").onclick = async () => {
   try {
     await api("/api/green", { method: "PUT", body: JSON.stringify({ values: readForm("green-form") }) });
     $("green-msg").textContent = "Saved"; $("green-msg").className = "feedback ok";
   } catch (err) { $("green-msg").textContent = err.message; $("green-msg").className = "feedback bad"; }
-};
-$("factors-save").onclick = async () => {
-  const overrides = {};
-  document.querySelectorAll("tr[data-factor]").forEach((tr) => {
-    const num = (sel) => tr.querySelector(sel).value.trim();
-    const min = num("[data-wmin]"), mean = num("[data-wmean]"), max = num("[data-wmax]");
-    const active = num("[data-activeb]"), total = num("[data-totalb]");
-    const empty = (v) => v === "";
-    if (empty(min) && empty(mean) && empty(max) && empty(active) && empty(total)) {
-      overrides[tr.dataset.factor] = null;  // clear override
-    } else {
-      const patch = {};
-      if (!empty(min)) patch.wh_per_output_token = { min: min, mean: mean, max: max };
-      if (!empty(active)) patch.active_b = active;
-      if (!empty(total)) patch.total_b = total;
-      overrides[tr.dataset.factor] = patch;
-    }
-  });
-  try {
-    await api("/api/green/factors", { method: "PUT", body: JSON.stringify({ overrides }) });
-    $("factors-msg").textContent = "Saved"; $("factors-msg").className = "feedback ok";
-  } catch (err) { $("factors-msg").textContent = err.message; $("factors-msg").className = "feedback bad"; }
-  loadGreenSettings();
-};
-$("green-match").onclick = async () => {
-  try {
-    const out = await api("/api/green/models/match", { method: "POST", body: "{}" });
-    $("factors-msg").textContent = `Catalogue ${out.revision}: ${Object.values(out.matches).filter(Boolean).length} bundled rows matched`;
-    $("factors-msg").className = "feedback ok";
-  } catch (err) { $("factors-msg").textContent = err.message; $("factors-msg").className = "feedback bad"; }
 };
 
 /* ---------------- dashboard data ---------------- */

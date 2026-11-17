@@ -50,7 +50,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from .green import load_factors, model_key
+from .green import load_factors, load_overrides, model_key
 
 PROJECT_DIR = Path(__file__).resolve().parent.parent
 ECOLOGITS_DIR = PROJECT_DIR / "data" / "ecologits"
@@ -69,6 +69,50 @@ FALLBACK_WORLD = {"gwp": 0.458290, "adpe": 1.349e-8, "pe": 2.587, "wue": 3.908}
 _BOUNDS = ("min", "mean", "max")
 
 _catalogue_cache: dict[str, tuple[float | None, Any]] = {}
+
+
+def model_config(model: str) -> dict[str, Any]:
+    """Per-model expert configuration from the override file (dashboard-editable).
+
+    Stored in data/green_overrides.json under ``models[model]`` and may carry:
+    ``params`` {total_b, active_b}, ``tps`` / ``ttft`` (configured averages, used
+    only when the stream did not observe them — same precedence as the reference
+    demo's catalogue deployment values), and datacenter scenario fields ``pue``,
+    ``wue_onsite``, ``country`` and ``electricity`` {gwp, adpe, pe, wue} which
+    override the global region settings for that model. Legacy entries holding
+    only ``wh_per_output_token`` keep their factor-arithmetic meaning.
+    """
+    entry = load_overrides().get(model)
+    if not isinstance(entry, dict):
+        entry = {}
+
+    def num(key: str) -> float | None:
+        try:
+            value = float(entry[key])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if value == value and value not in (float("inf"), float("-inf")) else None
+
+    params_block = entry.get("params") if isinstance(entry.get("params"), dict) else None
+    params = None
+    if params_block:
+        total, active = _scalar(params_block.get("total_b")), _scalar(params_block.get("active_b"))
+        if total and active:
+            params = {"active_b": active, "total_b": total,
+                      "source": str(entry.get("basis") or "user-override")}
+    electricity = entry.get("electricity") if isinstance(entry.get("electricity"), dict) else None
+    electricity = ({k: float(electricity[k]) for k in ("gwp", "adpe", "pe", "wue")
+                    if isinstance(electricity.get(k), (int, float))} if electricity else None)
+    return {
+        "entry": entry,
+        "params": params,
+        "tps": num("tps"),
+        "ttft": num("ttft"),
+        "pue": num("pue"),
+        "wue_onsite": num("wue_onsite"),
+        "country": (str(entry.get("country") or "").strip().upper() or None),
+        "electricity": electricity,
+    }
 
 
 def _scalar(value: Any) -> float | None:
@@ -257,16 +301,41 @@ def _params_from_row(row: dict[str, Any]) -> dict[str, Any] | None:
 
 
 def resolve_model(model: str) -> dict[str, Any]:
-    """Resolve a model id to compute inputs: params (if any), path mode, basis, provenance."""
+    """Resolve a model id to compute inputs: params (if any), path mode, basis, provenance.
+
+    Resolution order: per-model override entry (data/green_overrides.json — the
+    expert-mode card or an applied IKP estimate; works for ANY model id, exposed
+    or not) > factor-table row > EcoLogits catalogue > unconfigured. A per-model
+    config also carries datacenter scenario overlays the compute path applies.
+    """
     resolved: dict[str, Any] = {
         "params": None,
         "mode": "ecologits",
         "basis": "unknown",
         "param_source": None,
         "catalogue": None,
+        "config": {},
+        "config_scoped": False,
     }
+    config = model_config(model)
+    resolved["config"] = config
     factors = load_factors()
     key = model_key(model, factors)
+
+    # (1) explicit per-model parameters win over everything
+    if config["params"] is not None:
+        resolved["params"] = config["params"]
+        resolved["param_source"] = config["params"]["source"]
+        resolved["basis"] = config["params"]["source"]
+        resolved["mode"] = "ecologits"
+        scoped = any(config[field] is not None
+                     for field in ("pue", "wue_onsite", "country", "electricity"))
+        resolved["config_scoped"] = scoped
+        # a legacy wh_per_output_token override on a factor-table row keeps factor arithmetic
+        if config["entry"].get("wh_per_output_token") is not None and key is not None:
+            resolved["mode"] = "factor"
+        return resolved
+
     if key is not None:
         row = (factors.get("models") or {}).get(key, {})
         resolved["basis"] = str(row.get("basis", "unknown"))
@@ -279,9 +348,13 @@ def resolve_model(model: str) -> dict[str, Any]:
             resolved["mode"] = "factor"
         elif params:
             resolved["mode"] = "ecologits"
+            resolved["config_scoped"] = any(config[field] is not None
+                                            for field in ("pue", "wue_onsite", "country",
+                                                          "electricity"))
         else:
             resolved["mode"] = "unconfigured"
         return resolved
+
     match = catalogue_match(model)
     if match:
         resolved["params"] = {
@@ -293,9 +366,26 @@ def resolve_model(model: str) -> dict[str, Any]:
         resolved["basis"] = "ecologits_catalogue"
         resolved["catalogue"] = match
         resolved["mode"] = "ecologits"
+        resolved["config_scoped"] = any(config[field] is not None
+                                        for field in ("pue", "wue_onsite", "country",
+                                                      "electricity"))
     else:
         resolved["mode"] = "unconfigured"
     return resolved
+
+
+def _overlay_settings(green_settings: dict[str, Any], config: dict[str, Any],
+                      resolution: dict[str, Any]) -> dict[str, Any]:
+    """Apply the per-model datacenter scenario onto a copy of the green settings."""
+    settings = dict(green_settings)
+    if config.get("country"):
+        settings["region_country"] = config["country"]
+    if config.get("pue") is not None:
+        # a user-supplied PUE is a fixed scenario for that model (bound propagation
+        # comes from the grid triple; the demo treats single PUE values the same way)
+        for bound in _BOUNDS:
+            settings[f"region_pue_{bound}"] = float(config["pue"])
+    return settings
 
 
 def _ecologits_impacts(
@@ -306,10 +396,13 @@ def _ecologits_impacts(
     duration_ms: float | None,
     ttft_ms: float | None,
     tps: float | None,
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    config = config or {}
     grid = {bound: float(green_settings.get(f"region_grid_gco2_{bound}", 0.0)) / 1000.0 for bound in _BOUNDS}
     pue = {bound: float(green_settings.get(f"region_pue_{bound}", 0.0)) for bound in _BOUNDS}
-    mix, mix_source = electricity(str(green_settings.get("region_country", "WOR")))
+    mix, mix_source = electricity(str(green_settings.get("region_country", "WOR")),
+                                  override=config.get("electricity"))
 
     latency = (duration_ms or 0) / 1000.0
     kwargs = dict(
@@ -322,10 +415,16 @@ def _ecologits_impacts(
         if_electricity_mix_gwp=grid["mean"],
         if_electricity_mix_wue=mix["wue"],
         datacenter_pue=pue["mean"],
-        datacenter_wue=0.0,  # the WUE term is the on-site knob; our region settings track grid water
+        # On-site WUE: 0 unless the per-model card supplies it (the region settings
+        # track grid water via if_electricity_mix_wue).
+        datacenter_wue=float(config.get("wue_onsite") or 0.0),
     )
     if tps and tps > 0 and ttft_ms is not None and ttft_ms >= 0:
         kwargs.update(tps=float(tps), ttft=float(ttft_ms) / 1000.0)
+    elif config.get("tps") and config.get("ttft") is not None:
+        # configured averages (expert card), same precedence as the demo's
+        # catalogue deployment values — only when the stream did not measure them
+        kwargs.update(tps=float(config["tps"]), ttft=float(config["ttft"]))
 
     from ecologits.impacts.llm import compute_llm_impacts
 
@@ -344,13 +443,15 @@ def _ecologits_impacts(
             primary = _value(impacts.pe)
     if any(v is None for v in (water, adpe, primary)):
         raise ValueError("EcoLogits produced a missing impact value")
+    scenario = "per-model scenario" if (config.get("electricity") or config.get("pue") is not None
+                                        or config.get("wue_onsite") is not None) else "region scenario"
     return {
         "energy_kwh": energy,
         "gwp_kgco2e": gwp,
         "water_l": water,
         "adpe_kg_sbeq": adpe,
         "primary_mj": primary,
-        "provenance_power": f"{mix_source}; PUE/WUE: region scenario",
+        "provenance_power": f"{mix_source}; PUE/WUE: {scenario}",
     }
 
 
@@ -358,6 +459,7 @@ def _factor_impacts(
     model: str,
     usage: dict[str, Any] | None,
     green_settings: dict[str, Any],
+    config: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Legacy three-bound arithmetic plus grid-mix water/ADPe/PE side outputs."""
     from .green import compute as legacy_compute
@@ -365,18 +467,24 @@ def _factor_impacts(
     legacy = legacy_compute(model, usage, green_settings)
     if legacy.get("model_basis") == "unknown" or legacy.get("energy_kwh") is None:
         return _missing("unconfigured_model", "No factor table row with parameters", basis="unknown")
-    mix, mix_source = electricity(str(green_settings.get("region_country", "WOR")))
+    config = config or {}
+    mix, mix_source = electricity(str(green_settings.get("region_country", "WOR")),
+                                  override=config.get("electricity"))
     energy_mean = float(legacy["energy_kwh"]["mean"])
     gwp_mean = float(legacy["gwp_kgco2e"]["mean"])
+    onsite = float(config.get("wue_onsite") or 0.0)
+    scenario = ("per-model scenario" if (config.get("electricity") or config.get("pue") is not None
+                or config.get("wue_onsite") is not None or config.get("country")) else "region scenario")
     return {
         "energy_kwh": legacy["energy_kwh"],
         "gwp_kgco2e": legacy["gwp_kgco2e"],
-        # Approximation: grid-mix coefficients applied to the computed energy
-        # (the legacy factor table has no hardware-water or embodied terms).
-        "water_l": energy_mean * mix["wue"],
+        # Approximation: grid-mix coefficients (+ optional on-site WUE) applied to
+        # the computed energy — the legacy factor table has no water/ADPe terms.
+        "water_l": energy_mean * (mix["wue"] + onsite),
         "adpe_kg_sbeq": energy_mean * mix["adpe"],
         "primary_mj": gwp_mean / max(float(green_settings.get("region_grid_gco2_mean", 1.0)), 1e-9) * mix["pe"],
-        "provenance_power": f"{mix_source}; PUE/WUE: region scenario; water/ADPe/PE from grid mix (approximation)",
+        "provenance_power": (f"{mix_source}; PUE/WUE: {scenario}; "
+                             "water/ADPe/PE from grid mix (approximation)"),
     }
 
 
@@ -404,6 +512,8 @@ def compute(
         return _missing("missing_usage", "No reliable token count reported by upstream")
 
     resolution = resolve_model(model)
+    config = resolution.get("config") or {}
+    settings = _overlay_settings(settings, config, resolution)
     if resolution["mode"] == "unconfigured" or resolution["params"] is None:
         return _missing(
             "unconfigured_model",
@@ -419,7 +529,7 @@ def compute(
 
     try:
         if resolution["mode"] == "factor":
-            result = _factor_impacts(model, usage, settings)
+            result = _factor_impacts(model, usage, settings, config)
             basis = resolution["basis"]
             param_source = resolution["basis"]
         else:
@@ -430,6 +540,7 @@ def compute(
                 duration_ms=duration_ms,
                 ttft_ms=ttft_ms,
                 tps=tps,
+                config=config,
             )
             basis = resolution["basis"]
             param_source = resolution["param_source"] or "factor_table"

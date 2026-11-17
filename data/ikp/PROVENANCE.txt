@@ -1,0 +1,14 @@
+Vendored IKP (Inverse Knowledge Probing) estimation data for per-model size
+estimation; identical datasets to the reference green-metrics demo.
+
+Source: https://github.com/19PINE-AI/ikp (public IKP probe set final_probe_set_v8
++ effective_params.json calibration, evaluation_summary.json cohort n=93,
+R^2=0.9105).
+
+- final_probe_set_v8.json: 1400 stratified factual probes, 7 tiers x 200.
+- effective_params.json: calibration for N_eff = 10^((accuracy - intercept)/slope)
+  — IKP measures factual knowledge-equivalent capacity, NOT a physical weight
+  count. An estimated value is saved only as an explicit per-model scenario
+  (basis "ikp_estimate") and the UI must keep saying so.
+
+Refresh only intentionally; keep this revision pinned with the model code.
