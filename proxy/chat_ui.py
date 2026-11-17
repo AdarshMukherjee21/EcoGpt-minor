@@ -32,6 +32,7 @@ import subprocess  # nosec B404 - only used for a bounded taskkill tree-kill on 
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import APIRouter, Request, Response, WebSocket
@@ -99,12 +100,18 @@ class ChatUISidecar:
         distribution (`@deepseek-ai/dsh@<pin>`) so deployment needs no source
         checkout; ``--no-open`` suppresses the harness's own browser handoff
         (the daemon owns the redirect) and the port is our private 3180.
+        ``--public-url`` advertises the daemon origin + /chat so the printed
+        tokenized entry route goes through the proxy, and ``--trusted-host``
+        admits the daemon's authority for the harness's /api trust fence.
         """
         npx = shutil.which("npx") or shutil.which("npx.cmd") or "npx"
         command = self.cfg.command
         if command is None:
+            authority = urlparse(self.cfg.public_origin).netloc
             command = ["npx", "-y", f"@deepseek-ai/dsh@{self.cfg.dsh_npm_pin}",
-                       "--profile", "web", "--no-open", "--port", str(DSH_PORT)]
+                       "--profile", "web", "--no-open", "--port", str(DSH_PORT),
+                       "--public-url", self.cfg.public_origin + self.cfg.chat_prefix + "/",
+                       "--trusted-host", authority]
         if command and command[0] == "npx":
             command = [npx, *command[1:]]
         return command
@@ -186,11 +193,13 @@ def create_chat_router(
     router = APIRouter()
 
     @router.get(cfg.chat_prefix)
-    async def chat_root() -> Response:
-        # First visit: send the browser to the token exchange.
-        if sidecar.entry_url:
+    async def chat_root(request: Request) -> Response:
+        # First visit (no harness session cookie yet): send the browser to the
+        # tokenized entry URL — which, via --public-url, points back here.
+        # A cookied visitor passes straight through to the SPA index.
+        if sidecar.entry_url and not request.cookies:
             return RedirectResponse(sidecar.entry_url, status_code=307)
-        return Response("ecoGPT chat is starting; retry in a moment.", status_code=503)
+        return await _proxy_request(request, path="")
 
     @router.websocket(cfg.chat_prefix + "/api/remote.mux")
     async def remote_mux(websocket: WebSocket) -> None:
@@ -209,15 +218,19 @@ def create_chat_router(
 
     @router.api_route(cfg.chat_prefix + "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def proxy(path: str, request: Request) -> Response:
-        target = cfg.upstream_origin + "/" + path
-        if request.url.query:
-            target += "?" + request.url.query
+        return await _proxy_request(request, path)
+
+    async def _proxy_request(request: Request, path: str) -> Response:
         headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
         client = httpx.AsyncClient(base_url=cfg.upstream_origin, timeout=httpx.Timeout(90.0))
         body = await request.body() if request.method not in ("GET", "HEAD") else None
         upstream_request = client.build_request(request.method, "/" + path, headers=headers, content=body,
                                                 params=request.query_params)
-        upstream_response = await client.send(upstream_request, stream=True)
+        try:
+            upstream_response = await client.send(upstream_request, stream=True)
+        except httpx.HTTPError:
+            await client.aclose()
+            return Response("ecoGPT chat is starting; retry in a moment.", status_code=503)
         content_type = upstream_response.headers.get("content-type", "")
         if "text/event-stream" in content_type:
             # Genuinely incremental: relay raw bytes as they arrive.

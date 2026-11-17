@@ -32,6 +32,7 @@ from . import model_cache
 from . import router_engine
 from . import router_settings
 from . import trace_view
+from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_router
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -199,6 +200,7 @@ def create_app(
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     sidecar_transport: httpx.AsyncBaseTransport | None = None,
     manage_sidecar: bool = True,
+    manage_chat_ui: bool = False,
     sidecar_log_path: Path = SIDECAR_LOG_PATH,
     estimation_path: Optional[Path] = None,
     estimation_transport: httpx.AsyncBaseTransport | None = None,
@@ -272,7 +274,13 @@ def create_app(
         for model in green_estimation.reset_stale_runs(estimation_path):
             logger.info("estimation for '%s' was interrupted by the restart; resumable via continue", model)
         start_sidecar()
+        # Chat-UI sidecar (vendored dsh-harness web app, private 3180): the
+        # /chat router below proxies it; keep its lifecycle tied to the daemon.
+        if manage_chat_ui:
+            await chat_ui_sidecar.start()
         yield
+        if manage_chat_ui:
+            await chat_ui_sidecar.stop()
         if state["sidecar_client"] is not None:
             await state["sidecar_client"].aclose()
         if manage_sidecar:
@@ -280,6 +288,11 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="ecoGPT Proxy", lifespan=lifespan)
+    # Same-origin chat UI: /chat (prefix-stripping reverse proxy onto the
+    # dsh webserver at 127.0.0.1:3180; the harness client is document-relative,
+    # so its /api and WS calls resolve to /chat/api/... automatically).
+    chat_ui_sidecar = ChatUISidecar(ChatUIConfig())
+    app.include_router(create_chat_router(chat_ui_sidecar, ChatUIConfig()))
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_unreachable(_request: Request, exc: httpx.HTTPError) -> JSONResponse:
@@ -1223,9 +1236,17 @@ def create_app(
         context_length = info.get("context_length", info.get("max_input_tokens"))
         if isinstance(context_length, (int, float)) and context_length > 0:
             row["max_input_tokens"] = int(context_length)
+        # Additive deepseek-harness listing fields: the dsh model listing
+        # decoder needs an Anthropic-Messages capability declaration (else the
+        # entry reads as unusable and is hidden from the chat-UI picker) plus
+        # the window terms it maps onto context/max-output budgets.
+        row["input_modalities"] = ["text"]
+        row["api_capabilities"] = {"anthropic_messages": {}}
+        row["max_output_tokens"] = 131072
         return row
 
     @app.get("/v1/models")
+    @app.get("/models")  # dsh harness listing: modelListingURL() targets {origin}/models
     async def list_models(limit: int | None = None, after_id: str | None = None):
         meta = await gateway_model_metadata()
         # Desktop alias ids never surface in model discovery; the picker is

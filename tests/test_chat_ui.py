@@ -122,7 +122,8 @@ def test_router_redirects_first_visit_to_entry_url() -> None:
 def test_router_serves_503_when_sidecar_cold() -> None:
     cold = ChatUISidecar(ChatUIConfig())
     cold.entry_url = None
-    client = TestClient(_app(create_chat_router(cold, ChatUIConfig())))
+    # a closed-port upstream proves the 503 path regardless of local daemons
+    client = TestClient(_app(create_chat_router(cold, ChatUIConfig(upstream_origin="http://127.0.0.1:1"))))
     response = client.get("/chat", follow_redirects=False)
     assert response.status_code == 503
 
