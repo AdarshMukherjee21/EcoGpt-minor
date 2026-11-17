@@ -66,7 +66,7 @@ def test_apply_seeds_models_and_bearer_scheme(tmp_path):
     # contain an Anthropic allow-token, carry no deny token (ernie etc.) and
     # is what the app sends VERBATIM as the gateway model id.
     models = profile["inferenceModels"]
-    assert [m["name"] for m in models] == ["claude-eco-1", "claude-eco-2"]
+    assert [m["name"] for m in models] == ["openrouter-free", "nvidia-nemotron-3-5-lightning-free"]
     assert [m["labelOverride"] for m in models] == ["openrouter/free", "nvidia/nemotron-3.5-lightning:free"]
     assert [m["anthropicFamilyTier"] for m in models] == ["sonnet", "haiku"]
     assert models[0]["isFamilyDefault"] is True and models[1]["isFamilyDefault"] is True
@@ -77,20 +77,62 @@ def test_desktop_models_prefers_resolved_display_names():
         ["gpt-6-luna", "mystery-model:free", "blank-name"],
         ["GPT-6 Luna", "", None],
     )
-    # Caller-provided display names label the picker; missing/blank entries and a
-    # shorter list fall back to the raw model id (module stays pure/resolved).
+    # Caller-provided display names label the picker AND drive the alias slug;
+    # missing/blank entries and a shorter list fall back to the raw model id
+    # (module stays pure/resolved).
+    assert [m["name"] for m in models] == ["gpt-6-luna", "mystery-model-free", "blank-name"]
     assert [m["labelOverride"] for m in models] == ["GPT-6 Luna", "mystery-model:free", "blank-name"]
 
 
-def test_alias_names_are_validation_safe():
+def test_desktop_alias_name_is_display_name_slug():
     from proxy.claude_desktop import desktop_alias_name
-    allow = ("claude", "sonnet", "opus", "haiku", "fable", "mythos", "anthropic")
-    deny = ("gpt", "gemini", "qwen", "ernie", "openai", "llama", "#", ":", "/")
-    for index in range(30):
-        name = desktop_alias_name(index)
-        lowered = name.lower()
-        assert any(token in lowered for token in allow)
-        assert not any(token in lowered for token in deny)
+    assert desktop_alias_name("GPT 6 Luna") == "gpt-6-luna"
+    assert desktop_alias_name("  Dashy -- Name  ") == "dashy-name"
+    # only [a-z0-9-], no leading/trailing dash; all-symbol names slug to ""
+    import re
+    for raw in ("Weird___Name!!", "A B C", "!!!"):
+        slug = desktop_alias_name(raw)
+        assert re.fullmatch(r"[a-z0-9-]*", slug)
+        assert slug == slug.strip("-")
+
+
+def test_alias_map_generates_unique_slug_aliases():
+    from proxy.claude_desktop import desktop_alias_map
+    mapping = desktop_alias_map(
+        ["model-a", "model-b", "model-c"],
+        ["Same Name", "SAME NAME", "other"],
+    )
+    names = sorted(mapping)
+    assert sorted(names) == ["other", "same-name", "same-name-2"]
+    assert mapping["same-name"] == "model-a"
+    assert mapping["same-name-2"] == "model-b"
+    assert mapping["other"] == "model-c"
+    # aliases never shadow a real model id; self-colliding slugs need no alias
+    assert not (set(mapping) & {"model-a", "model-b", "model-c"})
+
+
+def test_alias_map_self_collision_needs_no_alias():
+    from proxy.claude_desktop import desktop_alias_map
+    mapping = desktop_alias_map(["gpt-6-luna"], ["GPT 6 Luna"])
+    assert mapping == {}
+
+
+def test_alias_map_is_idempotent_and_migrates_legacy_ids():
+    from proxy.claude_desktop import desktop_alias_map, is_legacy_alias
+    first = desktop_alias_map(["mystery-model:free"], ["Mystery Model (free)"])
+    assert first == {"mystery-model-free": "mystery-model:free"}
+    again = desktop_alias_map(["mystery-model:free"], ["Mystery Model (free)"], previous=first)
+    assert again == first
+    # a known alias is reused even when the display name changed
+    third = desktop_alias_map(["mystery-model:free"], ["Renamed Model"], previous=first)
+    assert third == first
+    # legacy claude-eco-N registries/aliases are never reused
+    legacy = desktop_alias_map(["mystery-model:free"], ["Mystery Model (free)"],
+                               previous={"claude-eco-1": "mystery-model:free"})
+    assert legacy == first
+    assert not any(is_legacy_alias(alias) for alias in legacy)
+    # aliases whose real model disappeared are dropped
+    assert desktop_alias_map(["other-real"], ["Other"], previous=first) == {"other": "other-real"}
 
 
 def test_apply_without_models_omits_inference_models(tmp_path):
@@ -99,6 +141,43 @@ def test_apply_without_models_omits_inference_models(tmp_path):
     apply(app_dir, "http://127.0.0.1:18090", "sk-test", backup_dir=tmp_path / "b")
     profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text())
     assert "inferenceModels" not in profile
+
+
+def test_apply_migrates_legacy_claude_eco_entries(tmp_path):
+    """Old claude-eco-N entries inside the Desktop config are replaced by slugs."""
+    app_dir = tmp_path / "Claude-3p"
+    _seed(app_dir)
+    profile_path = app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json"
+    profile_path.write_text(json.dumps({
+        "inferenceGatewayBaseUrl": "http://old", "inferenceGatewayApiKey": "k",
+        "inferenceModels": [
+            {"name": "claude-eco-1", "labelOverride": "Old A"},
+            {"name": "claude-eco-2", "labelOverride": "Old B"},
+        ]}), encoding="utf-8")
+    entries = claude_desktop.desktop_models(["real-a", "real-b"], ["Alpha Model", "Beta Model"])
+    apply(app_dir, "http://127.0.0.1:18090", "k", backup_dir=tmp_path / "b", model_entries=entries)
+    profile = json.loads(profile_path.read_text())
+    models = profile["inferenceModels"]
+    assert [m["name"] for m in models] == ["alpha-model", "beta-model"]
+    assert "claude-eco-1" not in json.dumps(profile) and "claude-eco-2" not in json.dumps(profile)
+    # same fixed entry, still the single ecoGPT entry in meta (updated in place)
+    meta = json.loads((app_dir / "configLibrary" / "_meta.json").read_text())
+    assert meta["appliedId"] == ECOGPT_ENTRY_ID
+    assert len([e for e in meta["entries"] if e["id"] == ECOGPT_ENTRY_ID]) == 1
+
+
+def test_apply_idempotent_repeated_runs_update_in_place(tmp_path):
+    app_dir = tmp_path / "Claude-3p"
+    _seed(app_dir)
+    entries = claude_desktop.desktop_models(["real-a", "real-b"], ["Alpha Model", "Beta Model"])
+    first = apply(app_dir, "http://127.0.0.1:18090", "k1", backup_dir=tmp_path / "b", model_entries=entries)
+    profile_path = app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json"
+    snapshot = profile_path.read_text()
+    meta_snapshot = (app_dir / "configLibrary" / "_meta.json").read_text()
+    second = apply(app_dir, "http://127.0.0.1:18090", "k1", backup_dir=tmp_path / "b", model_entries=entries)
+    assert second["applied_id"] == first["applied_id"] == ECOGPT_ENTRY_ID
+    assert profile_path.read_text() == snapshot
+    assert (app_dir / "configLibrary" / "_meta.json").read_text() == meta_snapshot
 
 
 def test_restore_swaps_back_and_clears_backup(tmp_path):

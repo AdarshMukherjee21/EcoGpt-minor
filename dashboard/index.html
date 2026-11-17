@@ -375,9 +375,32 @@ document.querySelectorAll(".tabs button").forEach((btn) => {
 
 /* ---------------- state + settings loads ---------------- */
 let STATE = null;
-function modelName(id) {
+// Desktop alias ids (picker aliases from model_overrides) must never surface
+// as labels: resolve to the real upstream model id first.
+function rawModelId(id) {
+  const overrides = (STATE && STATE.settings && STATE.settings.model_overrides) || {};
+  return (overrides[id] && String(overrides[id])) || id;
+}
+// Shared display-name label for any id: /api/state display names for exposed
+// models, then the deterministic prettifier (mirrors proxy/model_names.py:
+// provider/model split, dashes/underscores to spaces, title-case, ":variant"
+// -> "(variant)"; gateway metadata display_name already wins server-side).
+function prettyName(id) {
+  const text = String(id ?? "").trim();
+  if (!text) return "";
+  const colon = text.indexOf(":");
+  const base = colon === -1 ? text : text.slice(0, colon);
+  const variant = colon === -1 ? "" : text.slice(colon + 1).trim();
+  const words = base.split(/[-_/.]+/).filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1));
+  let out = words.join(" ");
+  if (variant) out += ` (${variant.toLowerCase()})`;
+  return out;
+}
+function labelFor(id) {
+  const real = rawModelId(id);
   const names = (STATE && STATE.settings && STATE.settings.model_display_names) || {};
-  return (names[id] && String(names[id])) || id;
+  return (names[real] && String(names[real])) || prettyName(real);
 }
 async function loadState() {
   STATE = await api("/api/state");
@@ -406,7 +429,7 @@ function renderClaudeClasses(c) {
   container.innerHTML = Object.keys(CLASS_LABELS).map((key) => {
     const current = chosen[key] || "";
     const options = ['<option value="auto">auto</option>'].concat(
-      exposed.map((m) => `<option value="${esc(m)}" title="${esc(m)}" ${m === current ? "selected" : ""}>${esc(modelName(m))}</option>`)).join("");
+      exposed.map((m) => `<option value="${esc(m)}" title="${esc(m)}" ${m === current ? "selected" : ""}>${esc(labelFor(m))}</option>`)).join("");
     return `<div class="providerrow" style="grid-template-columns:150px 1fr">
       <label class="muted" style="font-size:12px">${esc(CLASS_LABELS[key])}</label>
       <select data-claude-class="${esc(key)}">${options}</select>
@@ -494,7 +517,7 @@ async function loadModels() {
     $("models-msg").textContent = `${gatewayModels.length} models`;
     $("models-msg").className = "feedback ok";
   } catch (err) {
-    gatewayModels = (STATE.settings.exposed_models || []).map((id) => ({ id, display_name: modelName(id), exposed: true, provider: $("models-provider").value }));
+    gatewayModels = (STATE.settings.exposed_models || []).map((id) => ({ id, display_name: labelFor(id), exposed: true, provider: $("models-provider").value }));
     $("models-msg").textContent = `Provider unavailable: ${err.message}`;
     $("models-msg").className = "feedback bad";
   }
@@ -698,7 +721,7 @@ function greenModelCard(p, profiles) {
     <details class="adv" data-estimate-box ${est.status !== "idle" ? "open" : ""}>
       <summary>${p.known ? "Re-estimate / override parameters" : "Estimate these values (or enter them manually above)"}</summary>
       <div class="btnrow wrap">
-        <label>Judge model <select data-est-judge>${judgeChoices.map((m) => `<option>${esc(m)}${judgeChoices.length === 1 && m === p.model ? " (self-judged, biased)" : ""}</option>`).join("")}</select></label>
+        <label>Judge model <select data-est-judge>${judgeChoices.map((m) => `<option value="${esc(m)}">${esc(labelFor(m))}${judgeChoices.length === 1 && m === p.model ? " (self-judged, biased)" : ""}</option>`).join("")}</select></label>
         <label>Probes <input type="number" data-est-n min="14" max="140" step="7" value="28"></label>
         <label>Seconds between calls <input type="number" data-est-pace min="0" max="60" step="0.2" value="3.2"></label>
         <label>Max output tokens <input type="number" data-est-tokens min="64" max="32768" step="64" value="1024"></label>
@@ -716,8 +739,11 @@ function greenModelCard(p, profiles) {
       ${progress}
     </details>`;
 
+  const displayName = labelFor(p.model);
+  const aliasId = displayName !== p.model
+    ? `<span class="muted" style="font-size:11px" title="${esc(p.model)}">${esc(p.model)}</span>` : "";
   return `<details class="card-inlist" data-gm-model="${esc(p.model)}"${open}>
-    <summary><b>${esc(p.model)}</b> ${knownBadge} ${stateChip}
+    <summary><b>${esc(displayName)}</b> ${aliasId} ${knownBadge} ${stateChip}
       <span class="muted" style="font-size:11px">${esc(source)}</span></summary>
     <div class="gm-grid">
       ${gmInput("active_b", "Active parameters (B)", params.active_b)}
@@ -787,7 +813,7 @@ async function renderGreenModels() {
     if (!estBox) return;
     const estMsg = () => card.querySelector("[data-est-msg]");
     const estimateOpts = () => ({
-      judge: card.querySelector("[data-est-judge]").value.split(" (")[0],
+      judge: card.querySelector("[data-est-judge]").value,
       sample_n: parseInt(card.querySelector("[data-est-n]").value, 10),
       pace_s: parseFloat(card.querySelector("[data-est-pace]").value),
       max_tokens: parseInt(card.querySelector("[data-est-tokens]").value, 10),
@@ -895,12 +921,12 @@ function impactChart(rows, unit) {
     const v = (r[unit.key] || 0) * unit.mul;
     const h = (H - padT - padB) * (v / max);
     const x = padL + i * ((W - padL - padR) / rows.length);
-    svg += `<rect x="${x}" y="${H - padB - Math.max(h, 0)}" width="${barW}" height="${Math.max(h, 0)}" rx="2" fill="${colorOf(r.model)}"><title>${esc(r.model)}: ${sig(v)} ${unit.label}${r.legacy ? " (legacy factor)" : ""} · ${esc(r.impact_status || "")}</title></rect>`;
+    svg += `<rect x="${x}" y="${H - padB - Math.max(h, 0)}" width="${barW}" height="${Math.max(h, 0)}" rx="2" fill="${colorOf(r.model)}"><title>${esc(labelFor(r.model))}: ${sig(v)} ${unit.label}${r.legacy ? " (legacy factor)" : ""} · ${esc(r.impact_status || "")}</title></rect>`;
   });
   svg += "</svg>";
   el.innerHTML = svg;
   $("green-req-legend").innerHTML = models.slice(0, 6).map((m) =>
-    `<span style="color:${colorOf(m)}">■</span> ${esc(m)}`).join(" ");
+    `<span style="color:${colorOf(m)}">■</span> ${esc(labelFor(m))}`).join(" ");
 }
 
 async function loadDashboard() {
@@ -943,7 +969,7 @@ async function loadDashboard() {
     [{ color: "#3fb950" }, { color: "#1d4428" }]);
   impactChart(green.recent || [], greenUnitState());
   $("usage-rows").innerHTML = (usage.rows || []).map((r) => `<tr>
-    <td>${fmtWhen(r.ts)}</td><td>${esc(r.model)}</td><td>${esc(r.route)}</td>
+    <td>${fmtWhen(r.ts)}</td><td title="${esc(r.model)}">${esc(labelFor(r.model))}</td><td>${esc(r.route)}</td>
     <td class="num">${fmt(r.input_tokens)}</td><td class="num">${fmt(r.output_tokens)}</td>
     <td class="num">${fmt(r.cache_read_tokens)}</td><td class="num">${fmt(r.tokens_saved)}</td>
     <td class="num">${r.cost_reported ? esc(r.cost_reported) : "–"}</td>
@@ -953,7 +979,7 @@ async function loadDashboard() {
     <td class="${r.impact_status === "estimated" || r.impact_status == null ? "ok" : "muted"}">${esc(r.impact_status || "–")}</td>
     <td class="num ${r.status < 400 ? "ok" : "bad"}">${r.status}</td></tr>`).join("");
   $("green-models").innerHTML = (green.by_model || []).map((m) => `<tr>
-    <td>${esc(m.model)}</td><td>${esc(m.model_basis || "–")}</td>
+    <td title="${esc(m.model)}">${esc(labelFor(m.model))}</td><td>${esc(m.model_basis || "–")}</td>
     <td class="num">${fmt(m.requests)}</td>
     <td class="num">${sig(m.energy_kwh_mean != null ? m.energy_kwh_mean * 1000 : null)}</td>
     <td class="num">${sig(m.gwp_kgco2e_mean != null ? m.gwp_kgco2e_mean * 1000 : null)}</td>

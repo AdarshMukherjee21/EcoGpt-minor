@@ -27,6 +27,7 @@ from . import headroom_settings
 from . import ledger
 from . import model_cache
 from . import usage as usage_log
+from .model_names import pretty_name
 from .config import (
     CONFIG_PATH,
     DASHBOARD_DIR,
@@ -861,12 +862,11 @@ def create_app(
 
     GATEWAY_META_TTL_SECONDS = 300.0
 
-    def pretty_model_name(model_id: str) -> str:
-        """Human-readable fallback when the gateway has no metadata for a model."""
-        base_name, _, variant = model_id.partition(":")
-        words = [w for w in re.split(r"[-_/.\s]+", base_name) if w]
-        titled = " ".join(w if not w.islower() else w[:1].upper() + w[1:] for w in words)
-        return f"{titled} ({variant})" if variant else titled
+    # Shared deterministic display-name prettifier: gateway metadata
+    # display_name wins; otherwise proxy.model_names.pretty_name renders ids
+    # such as "baidu/ernie-5.5-flash-preview:free" as
+    # "Baidu Ernie 5.5 Flash Preview (free)". Used by /v1/models, /api/state
+    # and every dashboard label surface.
 
     async def gateway_model_metadata() -> dict[str, dict[str, Any]]:
         """Model metadata from the primary gateway (display_name/name, sizes), cached.
@@ -899,7 +899,7 @@ def create_app(
     def display_name_for(model_id: str, meta: dict[str, dict[str, Any]]) -> str:
         """Friendly label for a model id: gateway metadata, else pretty fallback."""
         info = meta.get(model_id) or {}
-        return str(info.get("display_name") or info.get("name") or "") or pretty_model_name(model_id)
+        return str(info.get("display_name") or info.get("name") or "") or pretty_name(model_id)
 
     def model_row(model_id: str, meta: dict[str, dict[str, Any]]) -> dict[str, Any]:
         info = meta.get(model_id) or {}
@@ -921,7 +921,9 @@ def create_app(
     @app.get("/v1/models")
     async def list_models(limit: int | None = None, after_id: str | None = None):
         meta = await gateway_model_metadata()
-        ids = list(settings.exposed_models)
+        # Desktop alias ids never surface in model discovery; the picker is
+        # seeded with alias entries whose *labels* carry the display names.
+        ids = visible_exposed_models()
         if after_id and after_id in ids:
             ids = ids[ids.index(after_id) + 1:]
         if isinstance(limit, int) and limit >= 0:
@@ -1008,6 +1010,16 @@ def create_app(
         state_["applied"] = state_.get("base_url") == settings.proxy_url()
         return state_
 
+    def visible_exposed_models() -> list[str]:
+        """Exposed ids that face users as real models: Desktop picker aliases excluded.
+
+        Aliases (legacy claude-eco-N or slug entries in settings.desktop_aliases)
+        must never surface in dashboard label UI; every surface substitutes the
+        real model's display name instead.
+        """
+        return [m for m in settings.exposed_models
+                if not claude_desktop.is_alias(m, settings.desktop_aliases)]
+
     @app.get("/", response_model=None)
     async def dashboard():
         return FileResponse(DASHBOARD_DIR / "index.html")
@@ -1015,9 +1027,11 @@ def create_app(
     @app.get("/api/state")
     async def state_view():
         meta = await gateway_model_metadata()
+        visible = visible_exposed_models()
 
         def _display(model_id: str) -> str:
-            # Desktop aliases (claude-eco-N) label as the real model they route to.
+            # Alias ids label as the real model they route to; overrides map a
+            # client-facing id to its upstream model.
             return display_name_for(settings.model_overrides.get(model_id, model_id), meta)
 
         return {
@@ -1025,8 +1039,14 @@ def create_app(
             "settings": {
                 "upstream_url": settings.upstream_url,
                 "api_key_set": bool(settings.effective_key()),
-                "exposed_models": settings.exposed_models,
-                "model_display_names": {m: _display(m) for m in settings.exposed_models},
+                "exposed_models": visible,
+                # model_display_names covers every exposed id INCLUDING desktop aliases
+        # (aliased ids label as the real model they route to), so history rows
+        # and green cards can name them; exposed_models itself stays alias-free
+        # for pickers and tables.
+        "model_display_names": {m: _display(m)
+                                for m in dict.fromkeys(
+                                    [*settings.exposed_models, *visible])},
                 "route_overrides": settings.route_overrides,
                 "model_overrides": settings.model_overrides,
                 "providers": [
@@ -1314,7 +1334,10 @@ def create_app(
 
     @app.get("/api/green/models")
     async def green_models_roster():
-        models: list[str] = list(settings.exposed_models)
+        # Green profile cards are per *real* model: alias ids (claude-eco-N
+        # legacy or Desktop picker slugs) never get their own card — telemetry
+        # for alias traffic is attributed to the upstream model they map to.
+        models: list[str] = visible_exposed_models()
         for key in green_metrics.load_overrides():
             if key not in models:
                 models.append(key)
@@ -1323,7 +1346,7 @@ def create_app(
                 models.append(key)
         return {"models": [_model_profile(model) for model in sorted(models)]}
 
-    @app.get("/api/green/models/{model}/estimate")
+    @app.get("/api/green/models/{model:path}/estimate")
     async def green_model_estimate_status(model: str):
         record = green_estimation.status_of(model, estimation_path)
         if not record:
@@ -1332,11 +1355,30 @@ def create_app(
         record["running"] = green_estimation.is_running(model, estimation_path)
         return record
 
-    @app.get("/api/green/models/{model}")
+    @app.put("/api/green/models/{model:path}/params")
+    async def green_model_params_clear(model: str):
+        """Remove the per-model params override (back to table/catalogue resolution).
+
+        Declared BEFORE the bare PUT /api/green/models/{model:path}: a :path
+        parameter matches slashes, so without this ordering the wider route would
+        swallow ".../<model>/params" (with the whole tail as the model id).
+        """
+        merged = green_metrics.load_overrides()
+        entry = dict(merged.get(model) or {})
+        entry.pop("params", None)
+        entry = {key: value for key, value in entry.items() if value is not None}
+        if entry:
+            merged[model] = entry
+        else:
+            merged.pop(model, None)
+        write_green_overrides(merged)
+        return {"ok": True, "profile": _model_profile(model)}
+
+    @app.get("/api/green/models/{model:path}")
     async def green_model_profile(model: str):
         return _model_profile(model)
 
-    @app.put("/api/green/models/{model}")
+    @app.put("/api/green/models/{model:path}")
     async def green_model_update(model: str, update: GreenModelUpdate):
         merged = green_metrics.load_overrides()
         entry = dict(merged.get(model) or {})
@@ -1408,23 +1450,9 @@ def create_app(
         write_green_overrides(merged)
         return {"ok": True, "profile": _model_profile(model)}
 
-    @app.put("/api/green/models/{model}/params")
-    async def green_model_params_clear(model: str):
-        """Remove the per-model params override (back to table/catalogue resolution)."""
-        merged = green_metrics.load_overrides()
-        entry = dict(merged.get(model) or {})
-        entry.pop("params", None)
-        entry = {key: value for key, value in entry.items() if value is not None}
-        if entry:
-            merged[model] = entry
-        else:
-            merged.pop(model, None)
-        write_green_overrides(merged)
-        return {"ok": True, "profile": _model_profile(model)}
-
     # -- estimation job lifecycle --------------------------------------------------
 
-    @app.post("/api/green/models/{model}/estimate")
+    @app.post("/api/green/models/{model:path}/estimate")
     async def green_model_estimate_start(model: str, start: GreenEstimateStart):
         if green_estimation.is_running(model, estimation_path):
             return error_json(409, f"estimation for '{model}' is already running", "invalid_request_error")
@@ -1446,7 +1474,7 @@ def create_app(
             return error_json(400, str(exc), "invalid_request_error")
         return {"ok": True, "estimate": record}
 
-    @app.post("/api/green/models/{model}/estimate/continue")
+    @app.post("/api/green/models/{model:path}/estimate/continue")
     async def green_model_estimate_continue(model: str):
         if green_estimation.is_running(model, estimation_path):
             return error_json(409, f"estimation for '{model}' is already running", "invalid_request_error")
@@ -1461,12 +1489,12 @@ def create_app(
             return error_json(400, str(exc), "invalid_request_error")
         return {"ok": True, "estimate": record}
 
-    @app.post("/api/green/models/{model}/estimate/stop")
+    @app.post("/api/green/models/{model:path}/estimate/stop")
     async def green_model_estimate_stop(model: str):
         record = await green_estimation.stop(model, path=estimation_path)
         return {"ok": True, "estimate": record}
 
-    @app.post("/api/green/models/{model}/estimate/apply")
+    @app.post("/api/green/models/{model:path}/estimate/apply")
     async def green_model_estimate_apply(model: str):
         record = green_estimation.load_state(estimation_path).get(model)
         if not record or record.get("status") != "done" or not record.get("effective_b"):
@@ -1588,7 +1616,7 @@ def create_app(
             # sends it as the bearer credential the proxy substitutes upstream.
             gateway_key = settings.effective_key(settings.default_provider())
             choices = (update.model_classes if update is not None else None) or {}
-            exposed = set(settings.exposed_models)
+            exposed = set(visible_exposed_models())
             choices = {k: v for k, v in choices.items()
                        if v and v != "auto" and v in exposed}
             claude_config.apply(claude_settings_path, settings.proxy_url(), settings.exposed_models,
@@ -1614,25 +1642,42 @@ def create_app(
         update = update or DesktopApply()
         base_url = (update.base_url or settings.proxy_url()).strip().rstrip("/") or "/"
         api_key = update.api_key or (settings.effective_key() or "ecogpt-managed")
-        # Claude Desktop only accepts Anthropic-shaped model names and sends
-        # them VERBATIM to the gateway, so expose stable claude-eco-N aliases
-        # (one per exposed model) and map each to its upstream model here.
-        # Idempotent: existing aliases are not re-aliased.
-        real_models = [m for m in settings.exposed_models if not claude_desktop.is_alias(m)]
-        aliases = [claude_desktop.desktop_alias_name(i) for i in range(len(real_models))]
+        # Claude Desktop only accepts Anthropic-shaped model names and may carry
+        # deny tokens / provider prefixes, so expose per-model alias ids derived
+        # from each model's display name (slug), mapped back to the upstream
+        # model here. Idempotent: known aliases are reused, so re-running apply
+        # updates the same entry in place instead of duplicating aliases.
+        previous_aliases = dict(settings.desktop_aliases)
+        real_models = [m for m in settings.exposed_models
+                       if not claude_desktop.is_alias(m, previous_aliases)]
         # Picker labels should be human-readable: resolve gateway display names
-        # for the real ids and pass them to the profile builder (which falls
-        # back to the raw id when metadata is missing).
+        # for the real ids (falls back to the shared pretty prettifier; never
+        # blank).
         meta = await gateway_model_metadata()
         display_names = [display_name_for(m, meta) for m in real_models]
-        model_entries = claude_desktop.desktop_models(real_models, display_names)
-        alias_map = dict(zip(aliases, real_models))
-        if alias_map:
-            merged_overrides = dict(settings.model_overrides)
-            merged_overrides.update(alias_map)
-            settings.model_overrides = merged_overrides
-            settings.exposed_models = list(dict.fromkeys(aliases + real_models))
-            persist_settings()
+        alias_map = claude_desktop.desktop_alias_map(real_models, display_names,
+                                                     previous=previous_aliases)
+        known_aliases = set(previous_aliases) | set(alias_map)
+        alias_names = [next((a for a, real in alias_map.items() if real == m), "")
+                       for m in real_models]
+        model_entries = claude_desktop.desktop_models(real_models, display_names, aliases=alias_names)
+        # Migrate/stale-cleanup: drop old-scheme claude-eco-N ids and aliases
+        # whose real model is no longer exposed from both exposed_models and
+        # model_overrides; then register the current alias -> real mapping.
+        keep_aliases = {alias for alias, real in alias_map.items() if alias != real}
+        stale_aliases = {m for m in settings.exposed_models
+                         if claude_desktop.is_alias(m, known_aliases)} - keep_aliases
+        settings.exposed_models = list(dict.fromkeys(
+            [alias for alias in alias_names if alias] + real_models))
+        settings.model_overrides = {
+            alias: real for alias, real in settings.model_overrides.items()
+            if not claude_desktop.is_alias(alias, set(previous_aliases) | stale_aliases)
+        }
+        settings.model_overrides.update({a: r for a, r in alias_map.items() if a != r})
+        settings.desktop_aliases = alias_map
+        if stale_aliases:
+            logger.info("desktop apply: retired stale aliases %s", ", ".join(sorted(stale_aliases)))
+        persist_settings()
         try:
             claude_desktop.apply(desktop_app_dir, base_url, api_key, backup_dir=desktop_backup_dir,
                                  model_entries=model_entries)

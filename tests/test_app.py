@@ -172,7 +172,6 @@ def test_claude_apply_writes_bearer_env_with_gateway_key(tmp_path):
 
 def test_desktop_apply_labels_models_with_gateway_display_names(tmp_path):
     """Desktop picker labels come from gateway metadata, falling back to the id."""
-    from proxy.claude_desktop import desktop_alias_name
 
     settings_path = tmp_path / "config.json"
     save_settings(Settings(upstream_url="http://gateway.test", exposed_models=["gpt-6-luna", "mystery-model:free"]),
@@ -192,7 +191,9 @@ def test_desktop_apply_labels_models_with_gateway_display_names(tmp_path):
         state = client.get("/api/state").json()
     profile = json.loads((app_dir / "configLibrary" / f"{ECOGPT_ENTRY_ID}.json").read_text(encoding="utf-8"))
     models = profile["inferenceModels"]
-    assert [m["name"] for m in models] == [desktop_alias_name(0), desktop_alias_name(1)]
+    # Names are slugs of the display names (never claude-eco-N, never positional).
+    assert [m["name"] for m in models] == ["gpt-6-luna", "mystery-model-free"]
+    assert all("__" not in n and "claude-eco" not in n for n in [m["name"] for m in models])
     # Metadata hit -> display name; miss -> pretty fallback, never a blank label.
     assert [m["labelOverride"] for m in models] == ["GPT-6 Luna", "Mystery Model (free)"]
     aliases = [m["name"] for m in models]

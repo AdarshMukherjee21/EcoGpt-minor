@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import DATA_DIR
+from .model_names import slugify
 
 # Fixed identity so repeated applies reuse the same entry.
 ECOGPT_ENTRY_ID = "ec0cde01-5eed-4a11-ad1e-2a9f40e5d001"
@@ -115,28 +116,103 @@ def _write_developer_settings(app_dir: Path) -> None:
     _write_json(path, data)
 
 
-def desktop_alias_name(index: int) -> str:
-    """Validation-safe alias for exposed model #index (0-based).
+def desktop_alias_name(display_name: str) -> str:
+    """Validation-safe alias id for one exposed model: a slug of its display name.
 
-    Claude Desktop validates Model list entries with substring heuristics: the
-    name must contain one of claude/sonnet/opus/haiku/fable/mythos/anthropic and
-    must not contain deny tokens (gpt, gemini, qwen, ernie, openai, llama, ...).
-    The name is sent to the gateway VERBATIM as the model id, so the proxy maps
-    it 1:1 to the real upstream model via model_overrides.
+    Lowercase, only [a-z0-9-]; spaces/symbols/underscores become single dashes;
+    leading/trailing dashes are trimmed ("GPT 6 Luna" -> "gpt-6-luna"). This is
+    what Claude Desktop sends VERBATIM as the gateway model id, so the proxy
+    maps it 1:1 to the real upstream model via model_overrides. Callers keep the
+    alias unique (see desktop_alias_map).
     """
-    return f"claude-eco-{index + 1}"
+    return slugify(display_name)
 
 
-_ALIAS_RE = re.compile(r"^claude-eco-\d+$")
+# Old scheme (claude-eco-1/2/3): kept ONLY to recognize and migrate entries
+# written by earlier versions of the generator.
+LEGACY_ALIAS_RE = re.compile(r"^claude-eco-\d+$")
+
+_ALIAS_RE = LEGACY_ALIAS_RE  # backwards-compatible name
 
 
-def is_alias(name: str) -> bool:
-    return bool(_ALIAS_RE.match(name or ""))
+def is_legacy_alias(name: str) -> bool:
+    return bool(LEGACY_ALIAS_RE.match(name or ""))
+
+
+def is_alias(name: str, alias_map: dict[str, str] | None = None) -> bool:
+    """True when `name` is an alias id this proxy created (never a real gateway id).
+
+    Two alias generations are recognized: legacy ``claude-eco-N`` ids (pattern),
+    and current display-name slugs, which are only recognizable through the
+    persisted alias registry (`alias_map` as stored in Settings.desktop_aliases).
+    """
+    if is_legacy_alias(name or ""):
+        return True
+    return bool(alias_map) and name in alias_map
+
+
+_FALLBACK_ALIASES = ("claude", "sonnet", "opus", "haiku", "fable", "mythos", "anthropic")
+
+
+def desktop_alias_map(
+    real_models: list[str],
+    display_names: list[str] | None,
+    previous: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Unique alias -> real-model mapping for the Desktop model picker.
+
+    The alias for a model is the slug of its display name (raw id slugged when
+    no display name resolves). Already-known aliases are reused so repeated
+    applies keep the same ids (idempotent). Collisions get -2, -3 suffixes and
+    never shadow a real model id. A slug that coincides with the real model id
+    itself needs no alias. If slugging produces nothing usable, a positional
+    fallback name is used.
+    """
+    real_set = set(real_models)
+    used: set[str] = set(real_models)
+    previous = {alias: real for alias, real in dict(previous or {}).items()
+                if not is_legacy_alias(alias) and real in real_set and alias not in real_set}
+    # alias -> real stored; look reuse up by real model id
+    reverse_previous = {real: alias for alias, real in previous.items()}
+
+    def _pick(base: str, allow_self: str = "") -> str:
+        if not base or is_legacy_alias(base):
+            return ""
+        if base == allow_self:
+            return base
+        if base not in used:
+            return base
+        for n in range(2, 100):
+            candidate = f"{base}-{n}"
+            if candidate not in used:
+                return candidate
+        return ""
+
+    mapping: dict[str, str] = {}
+    for index, model in enumerate(real_models):
+        display = ""
+        if display_names is not None and index < len(display_names):
+            display = str(display_names[index] or "").strip()
+        chosen = ""
+        reused = reverse_previous.get(model) or ""
+        if reused:
+            chosen = _pick(reused)
+        if not chosen:
+            base = slugify(display) or slugify(model)
+            chosen = _pick(base, allow_self=model if base == model else "")
+        if not chosen:
+            chosen = _pick(f"ecogpt-model-{index + 1}")
+        if not chosen or chosen == model:
+            continue  # nothing usable, or the slug is the real id itself
+        used.add(chosen)
+        mapping[chosen] = model
+    return mapping
 
 
 def desktop_models(
     exposed_models: list[str] | None,
     display_names: list[str] | None = None,
+    aliases: list[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     """inferenceModels entries for the profile: alias name + real display name.
 
@@ -144,6 +220,8 @@ def desktop_models(
     the first entry of each tier is that tier's default. ``display_names`` is a
     caller-resolved list aligned with ``exposed_models`` (raw gateway ids are
     not picker-friendly); missing/blank entries fall back to the raw model id.
+    ``aliases`` optionally pins the alias names (from desktop_alias_map) so
+    repeated applies reuse the same ids; they are generated fresh otherwise.
     """
     if not exposed_models:
         return None
@@ -155,8 +233,11 @@ def desktop_models(
         label = model
         if display_names is not None and index < len(display_names):
             label = str(display_names[index] or "").strip() or model
+        alias = ""
+        if aliases is not None and index < len(aliases):
+            alias = str(aliases[index] or "").strip()
         entry: dict[str, Any] = {
-            "name": desktop_alias_name(index),
+            "name": alias or desktop_alias_name(label),
             "labelOverride": label,
             "anthropicFamilyTier": tier,
         }
@@ -183,11 +264,11 @@ def _write_entry(app_dir: Path, base_url: str, api_key: str, model_entries: list
         # ANTHROPIC_AUTH_TOKEN for embedded Claude Code), never as x-api-key.
         "inferenceGatewayAuthScheme": "bearer",
     }
-    # Seed the model list from the proxy's exposed models, aliased to
-    # validation-safe claude-* names (Desktop rejects ids with provider
-    # prefixes like 'openrouter/free': they lack an Anthropic allow-token and
-    # may carry deny tokens; see desktop_models()). The alias name is what the
-    # app sends as the model id, so the proxy aliases it via model_overrides.
+    # Seed the model list from the proxy's exposed models, aliased to slugged
+    # display-name ids (Desktop rejects ids with provider prefixes like
+    # 'openrouter/free': they lack an Anthropic allow-token and may carry deny
+    # tokens; see desktop_models()). The alias name is what the app sends as
+    # the model id, so the proxy aliases it via model_overrides.
     if model_entries:
         profile["inferenceModels"] = model_entries
     _write_json(_entry_path(app_dir, ECOGPT_ENTRY_ID), profile)

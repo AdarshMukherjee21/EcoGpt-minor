@@ -140,6 +140,30 @@ def test_estimate_state_persists_per_probe_for_resume(tmp_path):
     assert all(r["verdict"] == "CORRECT" for r in record["rows"])
 
 
+def test_slash_and_colon_model_ids_hit_all_green_profile_routes(tmp_path):
+    """Regression: gateway model ids carry '/', ':' (free-tier OpenRouter ids).
+    The dashboard URL-encodes them; the ASGI server decodes %2F back to '/' before
+    routing, so plain {model} path params 404. Every /api/green/models/... route
+    must tolerate ids with slashes/colons."""
+    slugged = "baidu/ernie-5.5-flash-preview:free"
+    encoded = "baidu%2Fernie-5.5-flash-preview%3Afree"
+    population = _Population()
+    app, _ = _app(tmp_path, population=population, exposed=(slugged, JUDGE))
+    with TestClient(app) as client:
+        assert client.get(f"/api/green/models/{encoded}").status_code == 200
+        assert client.put(f"/api/green/models/{encoded}", json={
+            "params": {"active_b": 3, "total_b": 9}}).status_code == 200
+        assert client.get(f"/api/green/models/{encoded}/estimate").status_code == 200
+        start = client.post(f"/api/green/models/{encoded}/estimate",
+                            json={"judge": JUDGE, "sample_n": 7, "pace_s": 0, "max_tokens": 256})
+        assert start.status_code == 200, start.text
+        final = _wait_terminal(client, model=slugged)
+        assert final["status"] == "done"
+        assert client.post(f"/api/green/models/{encoded}/estimate/apply").status_code == 200
+        roster = client.get("/api/green/models").json()["models"]
+        assert any(entry["model"] == slugged for entry in roster)
+
+
 def test_estimate_start_rejected_when_running_or_bad_shape(tmp_path):
     population = _Population(slow=0.05)
     app, _ = _app(tmp_path, population=population)

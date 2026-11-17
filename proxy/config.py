@@ -31,6 +31,11 @@ class Settings:
     exposed_models: list[str] = field(default_factory=list)
     route_overrides: dict[str, str] = field(default_factory=dict)
     model_overrides: dict[str, str] = field(default_factory=dict)
+    # Desktop picker alias ids (slug of display name) -> real upstream model id.
+    # Registry of aliases this proxy created, so repeated /api/desktop/apply
+    # calls keep the same ids and legacy claude-eco-N ids can be recognized
+    # and migrated away.
+    desktop_aliases: dict[str, str] = field(default_factory=dict)
     providers: list[dict[str, Any]] = field(default_factory=list)
     model_providers: dict[str, str] = field(default_factory=dict)
     headroom: dict[str, Any] = field(default_factory=headroom_settings.defaults)
@@ -91,6 +96,7 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         settings.route_overrides = dict(raw.get("route_overrides", {}))
         overrides = raw.get("model_overrides") or {}
         settings.model_overrides = {str(k): str(v) for k, v in dict(overrides).items()}
+        settings.desktop_aliases = {str(k): str(v) for k, v in dict(raw.get("desktop_aliases") or {}).items()}
         stored_providers = raw.get("providers")
         if isinstance(stored_providers, list):
             settings.providers = [
