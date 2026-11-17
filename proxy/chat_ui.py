@@ -18,12 +18,20 @@ Design (ADR summary, mirrored from the approved plan):
   v1/docs/chat-ui.md.
 - This module holds no secrets: the dsh client key is a fixed dummy value
   (the daemon substitutes its own upstream credentials).
+- Session bootstrap is zero-touch: the sidecar's harvested launch token is
+  exchanged server-side against the harness (`GET /?token=…` → 303 +
+  Set-Cookie), and the minted harness session cookie is relayed to the
+  browser, so the first /chat load works without the raw-401 token dance.
+  When no exchange is possible yet, a one-click "Continue as admin"
+  interstitial replaces the harness's raw 401.
 - Telemetry rows (otel / session-telemetry-otel / desktop-product-telemetry)
   are disabled at the composition layer, not here.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import os
 import re
@@ -32,10 +40,11 @@ import subprocess  # nosec B404 - only used for a bounded taskkill tree-kill on 
 import sys
 from dataclasses import dataclass, field
 from typing import Any, Callable, Coroutine
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlsplit, urlparse
 
 import httpx
 from fastapi import APIRouter, Request, Response, WebSocket
+from fastapi.responses import HTMLResponse
 from starlette.background import BackgroundTask
 from starlette.responses import RedirectResponse, StreamingResponse
 
@@ -56,6 +65,17 @@ CHAT_PREFIX = "/chat"
 # session cookie (httpOnly; the token is one-time per boot).
 _ENTRY_URL_RE = re.compile(r"(https?://\S*token=[A-Za-z0-9_-]+)")
 
+# Session-cookie mechanics of the harness's authentication-token plugin
+# (vendor/dsh-harness packages/host/authentication-token/src/browser-auth.ts):
+# requests are authorized by a signed browser session cookie named
+# dsh-auth-<base64url(sha256(host-authority))>; the only way to obtain one is
+# the harness's own root exchange `GET /?token=<launch-token>` -> 303 +
+# Set-Cookie, because the cookie's HMAC signing key stays inside the harness
+# process. The proxy therefore relays that exchange instead of forging a
+# cookie.
+DSH_COOKIE_PREFIX = "dsh-auth-"
+DSH_TOKEN_QUERY = "token"
+
 # Hop-by-hop headers that must never be forwarded in either direction.
 _HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
                 "te", "trailer", "transfer-encoding", "upgrade", "host",
@@ -71,6 +91,8 @@ class ChatUIConfig:
     chat_prefix: str = CHAT_PREFIX
     dsh_npm_pin: str = DSH_NPM_PIN
     dummy_api_key: str = "ecogpt-local-dummy"
+    # Display name on the "Continue as …" login interstitial.
+    admin_name: str = "admin"
     # Command used to boot the harness (overridable for tests). Default uses
     # the pinned npm distribution: `npx -y @deepseek-ai/dsh@<pin> --profile web --no-open`
     command: list[str] | None = None
@@ -184,20 +206,36 @@ def create_chat_router(
 ) -> APIRouter:
     """Build the daemon-side /chat router: a prefix-stripping reverse proxy.
 
-    - GET /chat           → 401-until-cookie (redirects to the tokenized entry
-                            URL when the sidecar has published one).
+    - GET /chat           → token-exchange relay until the harness session
+                            cookie exists (auto-mints the cookie on first
+                            load; falls back to the tokenized entry URL
+                            redirect, then the login interstitial — never the
+                            raw 401).
     - /chat/api/<ws>      → WebSocket tunnel to the private origin.
-    - everything else     → HTTP streaming proxy, prefix-stripped.
+    - everything else     → HTTP streaming proxy, prefix-stripped, with the
+                            same 401 interception.
     """
     cfg = config or ChatUIConfig()
     router = APIRouter()
 
     @router.get(cfg.chat_prefix)
     async def chat_root(request: Request) -> Response:
-        # First visit (no harness session cookie yet): send the browser to the
-        # tokenized entry URL — which, via --public-url, points back here.
-        # A cookied visitor passes straight through to the SPA index.
-        if sidecar.entry_url and not request.cookies:
+        # First visit (no harness session cookie yet): exchange the sidecar's
+        # one-time launch token server-side and relay the minted session
+        # cookie to the browser, so the very first page load works with zero
+        # manual setup. When no cookie can be minted yet, degrade to the
+        # tokenized entry-URL redirect (via --public-url this re-enters the
+        # proxy) or, as a last resort, the friendly interstitial instead of
+        # the harness's raw 401. A cookied visitor passes straight through to
+        # the SPA index.
+        if sidecar.entry_url and not _has_harness_session(request, cfg):
+            automatic = await _auto_exchange(cfg, sidecar, return_to=cfg.chat_prefix + "/")
+            if automatic is not None:
+                return automatic
+            if sidecar.entry_url.startswith(cfg.public_origin):
+                return _login_interstitial(cfg, cfg.chat_prefix + "/")
+            # Entry URL points at some other origin (dev spike default): the
+            # legacy handoff still beats a raw 401.
             return RedirectResponse(sidecar.entry_url, status_code=307)
         return await _proxy_request(request, path="")
 
@@ -244,11 +282,147 @@ def create_chat_router(
         data = await upstream_response.aread()
         await upstream_response.aclose()
         await client.aclose()
+        if upstream_response.status_code == 401 and not _has_harness_session(request, cfg):
+            # Auth wall hit (cold deep-link / SPA XHR before the session
+            # exists): rerun the launch-token exchange and hand the minted
+            # cookie back with a redirect to the same path — the browser
+            # retries with the cookie in hand. When no exchange is possible,
+            # show the friendly interstitial; the harness's raw 401 body never
+            # reaches an uncookied browser. A browser that already sent the
+            # session cookie still gets the relayed upstream 401 (re-running
+            # the exchange for it could redirect-loop on revoked cookies).
+            return_to = cfg.chat_prefix + "/" + path
+            if sidecar.entry_url:
+                automatic = await _auto_exchange(cfg, sidecar, return_to=return_to)
+                if automatic is not None:
+                    return automatic
+            return _login_interstitial(cfg, return_to)
         return Response(data, status_code=upstream_response.status_code,
                         headers={k: v for k, v in upstream_response.headers.items()
                                  if k.lower() not in _HOP_HEADERS | {"content-length"}})  # Response() recomputes length
 
     return router
+
+
+def harness_cookie_name(upstream_origin: str) -> str:
+    """The harness session-cookie name for an upstream origin.
+
+    Mirrors the authentication-token plugin's cookieName(): a host-authority
+    SHA-256 digest, base64url (unpadded) after the fixed prefix. The authority
+    is the Host the harness itself sees — always the proxy's private loopback
+    upstream (e.g. ``127.0.0.1:3180``), and cookie lookup upstream therefore
+    matches this name regardless of which public origin the browser used.
+    """
+    authority = urlsplit(upstream_origin).netloc
+    digest = hashlib.sha256(authority.encode("utf-8")).digest()
+    return DSH_COOKIE_PREFIX + base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def _launch_token(entry_url: str | None) -> str | None:
+    """The harness launch token harvested from the sidecar's entry URL."""
+    if not entry_url:
+        return None
+    tokens = parse_qs(urlsplit(entry_url).query).get(DSH_TOKEN_QUERY)
+    return tokens[0] if tokens else None
+
+
+def _has_harness_session(request: Request, cfg: ChatUIConfig) -> bool:
+    """True when the browser carries the harness's signed session cookie.
+
+    The proxy cannot verify the cookie's HMAC signature (that secret stays in
+    the harness process); checking the exact name and v1/v2 prefix is enough
+    to route cold first-loads to the token exchange while passing real
+    sessions straight through — the harness re-verifies every request anyway.
+    """
+    value = request.cookies.get(harness_cookie_name(cfg.upstream_origin))
+    return value is not None and value.startswith(("v1.", "v2."))
+
+
+async def _exchange_session_cookie(cfg: ChatUIConfig, launch_token: str) -> str | None:
+    """Perform the harness's root token exchange server-side.
+
+    The harness mints its session cookie only in response to its own exchange
+    (``GET /?token=<launch-token>`` → 303 + Set-Cookie, signed with a secret
+    that stays in the harness process), so the proxy performs that logged-in
+    request on the browser's behalf and returns the harness-supplied
+    Set-Cookie verbatim. Returns None when the upstream does not answer with
+    the exchange handshake.
+    """
+    async with httpx.AsyncClient(base_url=cfg.upstream_origin,
+                                 timeout=httpx.Timeout(10.0),
+                                 follow_redirects=False) as client:
+        try:
+            response = await client.get("/", params={DSH_TOKEN_QUERY: launch_token})
+        except httpx.HTTPError:
+            return None
+    if response.status_code != 303:
+        return None
+    wanted = harness_cookie_name(cfg.upstream_origin) + "="
+    for cookie in response.headers.get_list("set-cookie"):
+        if cookie.startswith(wanted):
+            return cookie
+    return None
+
+
+async def _auto_exchange(cfg: ChatUIConfig, sidecar: ChatUISidecar,
+                         *, return_to: str) -> Response | None:
+    """Relay the launch-token exchange and hand the minted cookie to the browser.
+
+    Auto-approves the localhost login without user interaction. Tradeoff note:
+    the harness is loopback-only (127.0.0.1:3180) and this router serves it on
+    the daemon's loopback origin, so anyone able to reach the daemon could
+    mint the private session themselves; the launch token is never forwarded
+    anywhere except the loopback upstream. Returns None when no token was
+    harvested or the upstream did not complete the exchange.
+    """
+    token = _launch_token(sidecar.entry_url)
+    if token is None:
+        return None
+    cookie = await _exchange_session_cookie(cfg, token)
+    if cookie is None:
+        return None
+    return RedirectResponse(return_to, status_code=303,
+                            headers={"set-cookie": cookie, "cache-control": "no-store"})
+
+
+def _login_interstitial(cfg: ChatUIConfig, retry_path: str) -> Response:
+    """The one-click login page shown instead of the harness's raw 401.
+
+    Styled like the rest of the ecoGPT UI (dark/neutral dashboard palette);
+    the button re-enters the chat router, which retries the token exchange —
+    so it doubles as a "still booting" page for the window before the sidecar
+    publishes its entry URL.
+    """
+    html = f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ecoGPT chat — sign in</title>
+<style>
+  body {{ margin: 0; min-height: 100vh; display: grid; place-items: center;
+          background: #0b0d10; color: #f1f5f9; font: 15px/1.6 system-ui, sans-serif; }}
+  .card {{ width: min(26rem, 90vw); background: #12151c; border: 1px solid #1d222d;
+           border-radius: 14px; padding: 2rem 2.25rem; text-align: center; }}
+  h1 {{ font-size: 1.15rem; margin: 0.2rem 0 0.4rem; }}
+  p {{ color: #94a3b8; margin: 0 0 1.4rem; }}
+  .leaf {{ font-size: 1.5rem; color: #3cffd0; }}
+  a.button {{ display: inline-block; background: #06120e; color: #3cffd0;
+              border: 1px solid #1d4428; padding: 0.55rem 1.4rem; border-radius: 999px;
+              text-decoration: none; font-weight: 600; }}
+  a.button:hover {{ background: #1d4428; }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="leaf">&#127807;</div>
+    <h1>ecoGPT chat</h1>
+    <p>Finish signing in to the local chat session. Nothing leaves this machine.</p>
+    <a class="button" href="{retry_path}">Continue as {cfg.admin_name}</a>
+  </div>
+</body>
+</html>
+"""
+    return HTMLResponse(html, status_code=401, headers={"cache-control": "no-store"})
 
 
 def _default_ws_connect(url: str) -> Coroutine[Any, Any, Any]:

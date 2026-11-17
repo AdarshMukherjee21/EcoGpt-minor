@@ -232,3 +232,171 @@ def test_lifecycle_start_stop_with_mocked_spawn(monkeypatch: pytest.MonkeyPatch)
 
     asyncio.run(scenario())
     assert any("dsh@" in str(part) for part in captured["cmd"])
+
+
+# ---------------------------------------------------------------------------
+# Session bootstrap: cold-load 401 -> auto token exchange -> now-works path.
+# The harness (vendor/dsh-harness authentication-token plugin) authorizes with
+# a signed cookie named dsh-auth-<base64url(sha256(host-authority))>, minted
+# only by its root exchange `GET /?token=...` -> 303 + Set-Cookie.
+# ---------------------------------------------------------------------------
+
+
+def _harness_cookie(cfg: ChatUIConfig) -> str:
+    return chat_ui.harness_cookie_name(cfg.upstream_origin)
+
+
+def _session_cookie_header(cfg: ChatUIConfig) -> str:
+    name = _harness_cookie(cfg)
+    return f"{name}=v1.c2Vzc2lvbg.sig; Max-Age=2592000; Path=/; HttpOnly; SameSite=Strict"
+
+
+def _mock_harness(valid_token: str, exchange_up: bool = True):
+    """Mock upstream that behaves like the duck-typed harness webserver:
+
+    - GET /?token=<valid> -> 303 + Set-Cookie (token exchange), else 401
+    - GET <other>         -> 200 for a VALID session cookie, raw 401 without
+                             (the real harness verifies the cookie's HMAC)
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        expected = _session_cookie_header(ChatUIConfig()).split(";")[0]
+        cookies = request.headers.get("cookie", "")
+        session_present = expected in cookies
+        query = request.url.params.get("token") if request.url.path == "/" else None
+        if exchange_up and query is not None:
+            if query == valid_token:
+                return httpx.Response(
+                    303, headers={"location": "./", "set-cookie": _session_cookie_header(ChatUIConfig())})
+            return httpx.Response(401, text="dsh web authentication required")
+        if session_present:
+            return httpx.Response(200, json={"ok": True, "path": request.url.path})
+        return httpx.Response(401, text="dsh web authentication required")
+
+    return handler
+
+
+class _PatchedClient(httpx.AsyncClient):
+    def __init__(self, handler, *a: Any, **kw: Any) -> None:
+        kw.setdefault("transport", httpx.MockTransport(handler))
+        super().__init__(*a, **kw)
+
+
+def test_harness_cookie_name_matches_vendor_contract() -> None:
+    import base64 as b64
+    import hashlib as hs
+
+    expected = "dsh-auth-" + b64.urlsafe_b64encode(
+        hs.sha256(b"127.0.0.1:3180").digest()).rstrip(b"=").decode()
+    assert chat_ui.harness_cookie_name("http://127.0.0.1:3180") == expected
+
+
+def test_first_cold_load_exchanges_token_mints_cookie_then_works() -> None:
+    """Repro of the reported bug: first page-load of /chat now works.
+
+    Before: a cookieless (or dashboard-cookie-only) visitor got the harness's
+    raw 401 relayed through. Now: the proxy exchanges the launch token
+    server-side, relays the minted session cookie, and the next hit serves
+    the SPA index.
+    """
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    # --public-url flavor: the entry URL re-enters the daemon origin.
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=tok123"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("tok123"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        first = client.get("/chat", follow_redirects=False)
+        assert first.status_code == 303
+        assert first.headers["location"] == "/chat/"
+        assert _harness_cookie(cfg) in first.headers["set-cookie"]
+
+        # Follow-up load (cookie now set): straight through to the SPA index.
+        second = client.get("/chat", follow_redirects=False)
+        assert second.status_code == 200
+        assert second.json()["path"] == "/"
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_cold_deep_link_401_intercepts_and_retries_with_cookie() -> None:
+    """A 401 on a deep path (SPA XHR before the session exists) gets the same
+    exchange relay: 303 back to the same path with the session cookie."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=tok123"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("tok123"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        first = client.get("/chat/api/state", follow_redirects=False)
+        assert first.status_code == 303
+        assert first.headers["location"] == "/chat/api/state"
+        assert _harness_cookie(cfg) in first.headers["set-cookie"]
+
+        second = client.get("/chat/api/state", follow_redirects=False)
+        assert second.status_code == 200
+        assert second.json()["path"] == "/api/state"
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_interstitial_replaces_raw_401_when_exchange_fails() -> None:
+    """Token no longer valid (exchange 401s): a friendly one-click page, never
+    the raw 'dsh web authentication required' body."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:18090/chat/?token=stale"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("tok123"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        response = client.get("/chat", follow_redirects=False)
+        assert response.status_code == 401
+        assert "text/html" in response.headers["content-type"]
+        assert "Continue as" in response.text and "admin" in response.text
+        assert "dsh web authentication required" not in response.text
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_interstitial_shown_when_sidecar_upstream_401s_without_entry_url() -> None:
+    """Harness up but the entry URL (token) has not been harvested yet: still
+    no raw 401 — the interstitial doubles as a still-booting page."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = None
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("t"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        response = client.get("/chat/api/state", follow_redirects=False)
+        assert response.status_code == 401
+        assert "text/html" in response.headers["content-type"]
+        assert "Continue as" in response.text
+    finally:
+        chat_ui.httpx.AsyncClient = original
+
+
+def test_cookied_visitor_still_sees_genuine_upstream_401() -> None:
+    """A visitor WITH the session cookie must not get the exchange redirect
+    (would loop on genuinely revoked cookies); the upstream 401 relays."""
+    cfg = ChatUIConfig()
+    sidecar = ChatUISidecar(cfg)
+    sidecar.entry_url = "http://127.0.0.1:3180/?token=tok123"
+
+    original = chat_ui.httpx.AsyncClient
+    chat_ui.httpx.AsyncClient = lambda *a, **kw: _PatchedClient(_mock_harness("tok123"), *a, **kw)
+    try:
+        client = TestClient(_app(create_chat_router(sidecar, cfg)))
+        client.cookies.set(_harness_cookie(cfg), "v1.revoked.badsig")
+        response = client.get("/chat/api/state", follow_redirects=False)
+        assert response.status_code == 401
+        assert "dsh web authentication required" in response.text
+    finally:
+        chat_ui.httpx.AsyncClient = original
