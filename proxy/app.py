@@ -1387,6 +1387,11 @@ def create_app(
     async def dashboard():
         return FileResponse(DASHBOARD_DIR / "index.html")
 
+    @app.get("/favicon.ico")
+    async def favicon():
+        """The ecoGPT mark: browser tab + dashboard logo (dashboard/favicon.ico)."""
+        return FileResponse(DASHBOARD_DIR / "favicon.ico", media_type="image/x-icon")
+
     @app.get("/api/state")
     async def state_view():
         meta = await gateway_model_metadata()

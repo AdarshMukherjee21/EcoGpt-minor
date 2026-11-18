@@ -61,6 +61,8 @@ _STARTING_PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>ecoGPT chat is starting</title>
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="shortcut icon" href="/favicon.ico">
 <meta http-equiv="refresh" content="3">
 <style>
   body { margin: 0; min-height: 100vh; display: grid; place-items: center;
