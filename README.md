@@ -299,15 +299,6 @@ EcoGPT is a **local, loopback-only** deployment, by design:
   Multi-user hosting is planned for the packaging phase
   (`docs/chat-ui.md` has notes).
 
-## Status
-
-Working: the full pipeline, all three ingress dialects, Claude Code/Desktop
-one-click, green metrics core + expert profiles + IKP estimation, tier router,
-trace/sessions, dashboard, chat UI.
-
-Planned (in flight): packaging for external users (single-command setup /
-GitHub release / pip), formal cost model (headers-scraped today), multi-user
-hosting posture.
 
 ## Licenses
 
