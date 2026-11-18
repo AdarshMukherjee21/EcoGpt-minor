@@ -311,7 +311,7 @@ hosting posture.
 
 ## Licenses
 
-- ecoGPT's own code: your repo license.
+- ecoGPT's own code: MIT
 - Open WebUI (bundled as the chat UI): "Open WebUI Modified License" — not
   OSI-licensed; keep the deployment local/review the license before hosted
   commercial use (details in `docs/chat-ui.md`).
