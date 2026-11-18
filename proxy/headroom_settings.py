@@ -178,16 +178,21 @@ _BY_KEY = {entry["key"]: entry for entry in SCHEMA}
 
 
 def defaults() -> dict[str, Any]:
-    values = {entry["key"]: entry["default"] for entry in SCHEMA}
-    values["can_redrive"] = False
-    return values
+    return {entry["key"]: entry["default"] for entry in SCHEMA}
 
 
 def _coerce(entry: dict[str, Any], raw: Any) -> Any:
     key = entry["key"]
     kind = entry["type"]
     if raw is None or (isinstance(raw, str) and raw.strip() == ""):
-        if kind in ("int", "float") or entry.get("default") is None:
+        # Cleared/blank input (dashboard sends "" for empty fields): numeric
+        # entries snap back to the declared default — stashing None for a
+        # required field (sidecar_port, request_timeout_ms, …) wrote null
+        # into config.json and crashed the daemon on boot/reload. Entries
+        # whose declared default IS None stay optional/absent.
+        if kind in ("int", "float"):
+            return entry.get("default")
+        if entry.get("default") is None:
             return None
         if kind == "str":
             return ""

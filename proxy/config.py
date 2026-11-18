@@ -42,13 +42,10 @@ class Settings:
     headroom: dict[str, Any] = field(default_factory=headroom_settings.defaults)
     features: dict[str, Any] = field(default_factory=features_settings.defaults)
     green: dict[str, Any] = field(default_factory=green_settings.defaults)
-    # System One tier router: scalar settings (endpoint, warmth, guards) and the
-    # ordered tier ladder. api_key lives here and is masked in every view.
-    router: dict[str, Any] = field(default_factory=router_settings.defaults)
-    router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
-    # System One tier router: scalar settings + the ordered tier ladder
-    # ({"id", "description", "model"}). Tiers ride along in the same block; the
-    # classifier API key never leaves this dict (masked in every view).
+    # System One tier router: scalar settings (endpoint, warmth, guards) and
+    # the ordered tier ladder ({"id", "description", "model"}); the ladder is
+    # re-nested into the router block on save. api_key lives in the block and
+    # is masked in every view.
     router: dict[str, Any] = field(default_factory=router_settings.defaults)
     router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
     # Chat UI sidecar: "openwebui" (serve Open WebUI on its own local port)

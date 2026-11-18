@@ -117,18 +117,18 @@ def test_validate_tiers_reports_missing_models_without_raising():
     assert "'elephant'" in problems[0]
 
 
-def test_block_is_valid_complete_ladder():
+def test_setup_problems_complete_ladder():
     values = rs.defaults()
     values["auto_model_id"] = "eco-auto"
     tiers = [{"id": "goldfish", "description": "d", "model": "g-1"},
              {"id": "elephant", "description": "d", "model": "e-1"}]
-    assert rs.block_is_valid(values, tiers) == []
+    assert rs.setup_problems(values, tiers) == []
     values["auth_scheme"] = "bearer"
-    assert "no API key" in rs.block_is_valid(values, tiers)[0]
+    assert "no API key" in rs.setup_problems(values, tiers)[0]
     values["api_key"] = "sk-test"
-    assert rs.block_is_valid(values, tiers) == []
+    assert rs.setup_problems(values, tiers) == []
     values["endpoint_url"] = "not a url"
-    assert "well-formed" in rs.block_is_valid(values, tiers)[0]
+    assert "well-formed" in rs.setup_problems(values, tiers)[0]
 
 
 # --- loaders ----------------------------------------------------------------

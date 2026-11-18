@@ -238,6 +238,7 @@ class AnthropicToChat:
         self.usage: dict[str, Any] = {}
         self.stop_reason = "stop"
         self.error: str | None = None
+        self.sent_done = False
 
     def _chunk(self, delta: dict[str, Any], finish_reason: str | None = None) -> bytes:
         data = {
@@ -300,12 +301,23 @@ class AnthropicToChat:
                 self.stop_reason = _STOP_REASONS.get(reason, "stop")
             return b""
         if kind == "error":
+            # An upstream error often TERMINATES the SSE stream (no message_stop
+            # follows): end the Chat Completions stream here — emit the error
+            # event, the terminating chunk and [DONE], exactly once.
             self.error = (event.get("error") or {}).get("message", "Upstream error")
-            return f"data: {json.dumps({'error': {'message': self.error, 'type': 'api_error'}})}\n\n".encode("utf-8")
+            error_event = f"data: {json.dumps({'error': {'message': self.error, 'type': 'api_error'}})}\n\n".encode("utf-8")
+            if self.sent_done:
+                return error_event
+            self.sent_done = True
+            return (error_event + self._chunk({}, finish_reason="stop")
+                    + b"data: [DONE]\n\n")
         if kind == "message_stop":
             finish = "tool_calls" if self.tool_indexes else self.stop_reason
             if self.error:
                 finish = "stop"
+            if self.sent_done:
+                return b""
+            self.sent_done = True
             tail = self._chunk({}, finish_reason=finish) + b"data: [DONE]\n\n"
             return tail
         return b""

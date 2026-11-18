@@ -94,3 +94,24 @@ def test_model_class_overrides_win_over_auto(tmp_path):
     state = claude_config.status(path)
     assert state["model_classes"]["opus"] == "model-c"
     assert state["model_classes"]["small_fast"] == "model-b"
+
+
+def test_status_with_corrupt_settings_returns_error_not_crash(tmp_path) -> None:
+    """Corrupt ~/.claude/settings.json must degrade to status.error, not 500.
+
+    Regression: model_classes was assigned only inside the try, so an
+    unreadable/corrupt file raised UnboundLocalError from the return
+    statement - taking the whole dashboard /api/state down with it.
+    """
+    path = tmp_path / "settings.json"
+    path.write_text("{ not valid json", encoding="utf-8")
+    state = claude_config.status(path)
+    assert state["model_classes"] == {}
+    assert state["error"]
+    assert "base_url" in state  # every field still present
+
+
+def test_status_with_unreadable_path_returns_error(tmp_path) -> None:
+    state = claude_config.status(tmp_path / "missing.json")
+    assert state["model_classes"] == {}
+    assert state["base_url"] is None

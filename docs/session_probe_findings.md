@@ -1,6 +1,6 @@
 # Session identifiers: probe results
 
-Captured with `tools/capture_probe.py` (a logging forwarder) against Claude Code 2.1.322 and Codex CLI 0.165.0. Raw captures are in `probe_data/capture.jsonl`.
+Captured with `tools/capture_probe.py` (a logging forwarder) against Claude Code 2.1.322 and Codex CLI 0.165.0. (The raw capture file is not part of the repo; reproduce with `tools/capture_probe.py`.)
 
 | Agent | Header(s) | Body field(s) | Notes |
 |---|---|---|---|

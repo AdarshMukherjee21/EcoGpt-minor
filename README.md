@@ -166,9 +166,10 @@ behavior if you want to inspect what a specific client sends.
 .venv/Scripts/python.exe -m pytest -q     # or .venv/bin/python -m pytest
 ```
 
-276 tests cover the translation layers (all three dialects × streaming),
-routing, router guards, green metrics arithmetic and provenance, ledger
-schemas, settings round-trips, sidecar wiring and the chat-UI integration.
+The pytest suite (290+ tests) covers the translation layers (all three
+dialects × streaming), routing, router guards, green metrics arithmetic and
+provenance, ledger schemas, settings round-trips, sidecar wiring and the
+chat-UI integration.
 
 ## Project layout
 

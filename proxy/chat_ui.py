@@ -148,7 +148,11 @@ class ChatUISidecar:
         """
         if self.cfg.command is not None:
             return list(self.cfg.command)
+        # The console script lands as open-webui.exe (Windows Scripts/) or
+        # open-webui (POSIX bin/) next to the running interpreter.
         exe = Path(sys.executable).with_name("open-webui.exe")
+        if not exe.exists():
+            exe = Path(sys.executable).with_name("open-webui")
         if exe.exists():
             launcher: list[str] = [str(exe)]
         else:

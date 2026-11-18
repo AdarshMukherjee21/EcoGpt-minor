@@ -229,7 +229,7 @@ def desktop_models(
     seen_tiers: set[str] = set()
     entries = []
     for index, model in enumerate(exposed_models[:200]):
-        tier = tier_cycle[index] if index < len(tier_cycle) else tier_cycle[index % len(tier_cycle)]
+        tier = tier_cycle[index % len(tier_cycle)]
         label = model
         if display_names is not None and index < len(display_names):
             label = str(display_names[index] or "").strip() or model

@@ -95,6 +95,7 @@ def status(settings_path: Path) -> dict[str, Any]:
     auth_token_set = False
     api_key_blank = False
     gateway_discovery = False
+    model_classes: dict[str, str] = {}
     error = None
     try:
         data = _load_object(_read_text(settings_path))
@@ -117,7 +118,7 @@ def status(settings_path: Path) -> dict[str, Any]:
         "auth_token_set": auth_token_set,
         "api_key_blank": api_key_blank,
         "gateway_discovery_enabled": gateway_discovery,
-        "model_classes": model_classes if isinstance(model_classes, dict) else {},
+        "model_classes": model_classes,
         "backup_exists": backup_path(settings_path).exists(),
         "error": error,
     }

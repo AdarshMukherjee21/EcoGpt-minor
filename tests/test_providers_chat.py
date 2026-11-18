@@ -168,3 +168,35 @@ def test_usage_daily_endpoint(tmp_path):
     assert days[0]["requests"] == 1
     assert days[0]["input_tokens"] == 8  # 11 prompt - 3 cached
     assert days[0]["output_tokens"] == 5
+
+
+def test_providers_put_with_legacy_fields_does_not_clobber_provider_key(tmp_path):
+    """Regression: PUT providers + top-level api_key in ONE payload used to
+    re-clobber the provider[0] pairing after it was set — the duplicate
+    unconditional upstream_url/api_key assignments ran after the providers
+    block. The legacy field must never win over the paired provider key."""
+    store: dict = {}
+    client = _client(tmp_path, _mock(store))
+    resp = client.put("/api/settings", json={"providers": [
+        {"name": "primary", "url": "http://gw-a.test", "api_key": "prov-key"},
+    ], "api_key": "legacy-stale"})
+    assert resp.status_code == 200
+    assert resp.json()["restart_required"] is False  # chat fields untouched
+    config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    # top-level api_key mirrors provider[0] (kept in sync for legacy reads)
+    assert config["api_key"] == "prov-key"
+    assert config["providers"][0]["api_key"] == "prov-key"
+
+
+def test_chat_ui_settings_report_restart_required(tmp_path):
+    """The chat sidecar is configured once at boot; changing chat_ui_port
+    persists but only takes effect after a daemon restart — PUT now says so."""
+    store: dict = {}
+    client = _client(tmp_path, _mock(store))
+    resp = client.put("/api/settings", json={"chat_ui_port": 18555})
+    assert resp.status_code == 200
+    assert resp.json()["restart_required"] is True
+    # saving the same value again needs no restart
+    resp = client.put("/api/settings", json={"chat_ui_port": 18555})
+    assert resp.status_code == 200
+    assert resp.json()["restart_required"] is False

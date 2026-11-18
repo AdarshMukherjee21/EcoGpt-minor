@@ -154,3 +154,33 @@ def test_anthropic_to_chat_survives_split_chunks():
     texts = "".join(e["choices"][0]["delta"].get("content", "") for e in events
                     if e.get("choices") and e["choices"][0]["delta"].get("content"))
     assert texts == "Hello"
+
+
+def test_anthropic_to_chat_error_event_terminates_with_done():
+    """Regression: an upstream mid-stream error often ends the SSE without a
+    message_stop — the Chat Completions stream must still see [DONE] or
+    OpenAI-style clients hang waiting for the terminator."""
+    error_sse = (
+        'event: message_start\n'
+        'data: {"type":"message_start","message":{"id":"m1","role":"assistant"}}\n\n'
+        'event: error\n'
+        'data: {"type":"error","error":{"type":"api_error","message":"upstream exploded"}}\n\n'
+    )
+    converter = AnthropicToChat("claude-haiku-5-5")
+    out = converter.feed(error_sse.encode("utf-8")).decode("utf-8")
+    lines = [line for line in out.splitlines() if line.startswith("data: ")]
+    assert any('"error"' in line and "upstream exploded" in line for line in lines)
+    assert "data: [DONE]" in out
+    assert '"finish_reason":"stop"' in out.replace(" ", "")
+
+
+def test_anthropic_to_chat_error_then_stop_does_not_double_terminate():
+    error_sse = (
+        'event: error\n'
+        'data: {"type":"error","error":{"type":"api_error","message":"boom"}}\n\n'
+        'event: message_stop\n'
+        'data: {"type":"message_stop"}\n\n'
+    )
+    converter = AnthropicToChat("claude-haiku-5-5")
+    out = converter.feed(error_sse.encode("utf-8")).decode("utf-8")
+    assert out.count("data: [DONE]") == 1

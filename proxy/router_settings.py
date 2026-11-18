@@ -304,8 +304,12 @@ def is_auto_model(values: dict[str, Any], model: str) -> bool:
     return bool(model) and model == str(values.get("auto_model_id") or AUTO_MODEL_ID)
 
 
-def block_is_valid(values: dict[str, Any], tiers: list[dict[str, str]]) -> list[str]:
-    """Empty problem list == the router can serve the auto model."""
+def setup_problems(values: dict[str, Any], tiers: list[dict[str, str]]) -> list[str]:
+    """Setup problems; an EMPTY list means the router can serve the auto model."""
+
+    # (Previously block_is_valid, a name that read as a boolean at every
+    # call site: `not block_is_valid(...)` had to be *valid*.)
+
     problems: list[str] = []
     auto_id = str(values.get("auto_model_id") or AUTO_MODEL_ID)
     if not AUTO_ID_RE.match(auto_id):

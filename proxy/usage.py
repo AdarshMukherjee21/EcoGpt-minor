@@ -5,7 +5,7 @@ import sqlite3
 import time
 from contextlib import closing
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 SCHEMA = """
 create table if not exists usage (
@@ -186,6 +186,27 @@ def recent(path: Path, limit: int) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def rows_ascending(path: Path, batch: int = 1000) -> Iterator[dict[str, Any]]:
+    """Yield every usage row in id (chronological) order, paged by an id cursor.
+
+    For exports over a large ledger: never materializes the whole table in
+    memory (recent(path, 10_000_000) used to fetchall the world).
+    """
+    with closing(sqlite3.connect(path)) as db:
+        db.row_factory = sqlite3.Row
+        cursor = -1
+        while True:
+            page = db.execute(
+                "select * from usage where id > ? order by id asc limit ?",
+                (cursor, batch),
+            ).fetchall()
+            if not page:
+                return
+            for row in page:
+                cursor = int(row["id"])
+                yield dict(row)
+
+
 def totals(path: Path) -> dict[str, Any]:
     with closing(sqlite3.connect(path)) as db:
         db.row_factory = sqlite3.Row
@@ -215,7 +236,12 @@ def parse_cost(cost: str | None) -> float | None:
 
 
 def daily(path: Path, days: int = 30) -> list[dict[str, Any]]:
-    """Per-UTC-day rollup for the dashboard charts: tokens, cost, green."""
+    """Per-UTC-day rollup for the dashboard charts: tokens, cost, green.
+
+    Costs are parsed in Python (the text column is not SQL-aggregatable):
+    one extra un-grouped pass on the SAME connection instead of the old
+    per-day connection-per-row N+1.
+    """
     with closing(sqlite3.connect(path)) as db:
         db.row_factory = sqlite3.Row
         rows = db.execute(
@@ -234,15 +260,18 @@ def daily(path: Path, days: int = 30) -> list[dict[str, Any]]:
             "coalesce(sum(gwp_kgco2e_max), 0.0) as gwp_kgco2e_max "
             "from usage group by day order by day asc"
         ).fetchall()
+        cost_rows = db.execute(
+            "select date(ts, 'unixepoch') as day, cost_reported from usage"
+        ).fetchall()
+    costs: dict[str, float] = {}
+    for row in cost_rows:
+        cost = parse_cost(row["cost_reported"])
+        if cost is not None:
+            costs[row["day"]] = costs.get(row["day"], 0.0) + cost
     out = []
     for row in rows:
         item = dict(row)
-        # cost_reported is not aggregated in SQL (text); re-query just costs per day.
-        with closing(sqlite3.connect(path)) as db:
-            raw = db.execute(
-                "select cost_reported from usage where date(ts, 'unixepoch') = ?", (item["day"],)
-            ).fetchall()
-        item["cost"] = round(sum(c for r in raw if (c := parse_cost(r[0])) is not None), 6)
+        item["cost"] = round(costs.get(item["day"], 0.0), 6)
         out.append(item)
     return out[-days:]
 

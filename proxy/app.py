@@ -3,14 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 import uuid
 import datetime
 from datetime import timezone
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from pathlib import Path
 from typing import Any, Iterator, Optional
 from urllib.parse import urlsplit
@@ -48,8 +46,7 @@ from .config import (
     save_settings,
 )
 from .session_key import extract_session
-from .router_engine import RouterClassifier, ClassifierConfig, Decision, ClassifyError
-from . import router_engine as _router_engine
+from .router_engine import RouterClassifier, ClassifierConfig, Decision, ClassifyError, build_state, estimate_tokens
 from .sidecar import Sidecar
 from .sidecar_client import CompressError, Outcome, SidecarClient
 from .translate_request import to_responses_request
@@ -192,6 +189,14 @@ def _sidecar_settings(settings: Settings) -> dict[str, Any]:
     return settings.headroom
 
 
+async def _aclose_quietly(resource: Any) -> None:
+    """Best-effort async close for replaced clients; teardown must not raise."""
+    try:
+        await resource.aclose()
+    except Exception:
+        logger.exception("failed to close a replaced client")
+
+
 def create_app(
     settings_path: Path = CONFIG_PATH,
     db_path: Path = USAGE_DB_PATH,
@@ -201,7 +206,9 @@ def create_app(
     ledger_dir: Path = LEDGER_DIR,
     upstream_transport: httpx.AsyncBaseTransport | None = None,
     sidecar_transport: httpx.AsyncBaseTransport | None = None,
-    manage_sidecar: bool = True,
+    # Both sidecar managers default OFF: tests/imports must never spawn
+    # subprocesses. The production entry point (proxy.__main__) opts in.
+    manage_sidecar: bool = False,
     manage_chat_ui: bool = False,
     sidecar_log_path: Path = SIDECAR_LOG_PATH,
     estimation_path: Optional[Path] = None,
@@ -222,7 +229,6 @@ def create_app(
     # is (re)built lazily from the request-time router settings; configuration
     # edits through PUT /api/router rebuild it in place.
     state["router_warmth"]: dict[str, dict[str, Any]] = {}
-    state["router_classifier_config"]: ClassifierConfig | None = None
     _background_tasks: set["asyncio.Task[None]"] = set()
 
     def build_sidecar_client() -> SidecarClient:
@@ -332,8 +338,7 @@ def create_app(
             return None
         # The auto model is exposed only when the router is fully set up:
         # enabled, valid ladder (every tier has a model).
-        if router_settings_current() and model and router_settings.is_auto_model(
-                router_settings_current(), model) and router_auto_offered():
+        if model and router_settings.is_auto_model(router_settings_current(), model) and router_auto_offered():
             return None
         return error_json(
             404,
@@ -394,7 +399,10 @@ def create_app(
             stream=ctx.stream,
             body=ctx.body,
             upstream_model=ctx.upstream_model,
-            t0_offset_ms=_t0_offset(ctx) or 0,
+            # The request event is the timeline anchor by design (ledger.py);
+            # measure, don't shift it — a nonzero boot-time offset made trace
+            # tests flaky under load.
+            t0_offset_ms=0,
         )
 
     def ledger_stage(ctx: RequestContext, record: dict[str, Any], duration_ms: float, *, error_message: str | None = None) -> None:
@@ -683,14 +691,17 @@ def create_app(
         tiers = router_tiers_current()
         if not values.get("enabled"):
             return False
-        return not router_settings.block_is_valid(values, tiers)
+        return not router_settings.setup_problems(values, tiers)
 
     def rebuild_router_client() -> RouterClassifier:
         config = ClassifierConfig.from_values(router_settings_current())
         old = state.get("router_classifier")
         state["router_classifier"] = RouterClassifier(config, transport=router_transport)
+        state["_router_classifier_fingerprint"] = config.fingerprint()
         if old is not None:
-            state["_router_classifier_fingerprint"] = old.config.fingerprint()
+            # The old client's connection pool must not leak on rebuild; the
+            # request loop may still be running, so close asynchronously.
+            asyncio.get_running_loop().create_task(_aclose_quietly(old))
         return state["router_classifier"]
 
     def router_classifier() -> RouterClassifier:
@@ -726,24 +737,20 @@ def create_app(
             warmth.update(seeded)
         warmth["seeded"] = True
 
-    async def router_stage(ctx: RequestContext) -> Optional[dict[str, Any]]:
-        """Classify + apply rules for auto-model requests. Returns the decision.
+    async def router_stage(ctx: RequestContext) -> None:
+        """Classify + apply rules for auto-model requests.
 
-        Never mutates ctx.body; a decided tier is applied by the caller through
-        ctx.upstream_model / ctx.route before dispatch. Raises nothing: every
-        failure path returns an error JSONResponse instead (the request is
-        served by the failure posture, not broken).
+        Never mutates ctx.body; a decided tier is applied to the caller's ctx
+        (route/upstream_model set inside router_classify). Raises nothing:
+        every failure path posts an error ledger event and leaves the request
+        to the failure posture (never broken mid-pipeline).
         """
         started_all = time.monotonic()
         if not router_active_now():
-            return None
+            return
         warmth_state = warmth_state_for(ctx.session_key)
         seed_warmth_from_ledger(ctx)
-        recorded = await router_classify(ctx, warmth_state, started_all)
-        # Success: the tier is applied to ctx (route/upstream_model set inside
-        # router_classify); dispatch continues below. Returning the decision
-        # here would leak it as the HTTP response instead of the message.
-        return None
+        await router_classify(ctx, warmth_state, started_all)
 
     async def router_classify(ctx: RequestContext, warmth_state: dict[str, Any],
                               started_all: float) -> Optional[Decision]:
@@ -1126,9 +1133,7 @@ def create_app(
         # the router block is fully set up. A decided tier replaces the
         # model/route on the context before dispatch; errors never break the
         # request (the failure posture serves it instead).
-        router_error = await router_stage(ctx)
-        if router_error is not None:
-            return router_error
+        await router_stage(ctx)
         # Model aliasing: forward under the effective upstream model id. The
         # ledger has already recorded the request under the client-facing name.
         if ctx.upstream_model != ctx.model:
@@ -1291,7 +1296,7 @@ def create_app(
         ladder is fully set up (every tier has a model assigned)."""
         if not bool(router_settings_current().get("enabled")):
             return False
-        return not router_settings.block_is_valid(
+        return not router_settings.setup_problems(
             router_settings_current(), router_tiers_current())
 
     def openai_error(status_code: int, message: str, kind: str = "api_error") -> JSONResponse:
@@ -1491,17 +1496,18 @@ def create_app(
                 return error_json(400, "Model overrides must map non-empty names to non-empty model ids",
                                   "invalid_request_error")
             settings.model_overrides = aliases
-        if new_url is not None:
-            settings.upstream_url = new_url
-        if update.api_key is not None:
-            settings.api_key = update.api_key.strip()
         if update.exposed_models is not None:
             settings.exposed_models = list(dict.fromkeys(update.exposed_models))
         if update.route_overrides is not None:
             settings.route_overrides = dict(update.route_overrides)
+        # The guarded assignments above are the ONLY upstream_url/api_key
+        # writes: providers (when present) own the pairing with provider[0].
+        # (Two unconditional duplicate pairs used to clobber it again here.)
+        chat_restart_required = False
         if update.chat_ui is not None:
             if update.chat_ui not in ("openwebui", "off"):
                 return error_json(400, "chat_ui must be 'openwebui' or 'off'", "invalid_request_error")
+            chat_restart_required = chat_restart_required or update.chat_ui != settings.chat_ui
             settings.chat_ui = update.chat_ui
         if update.chat_ui_port is not None:
             if not 1024 <= int(update.chat_ui_port) <= 65535:
@@ -1510,9 +1516,10 @@ def create_app(
             if int(update.chat_ui_port) == LISTEN_PORT:
                 return error_json(400, f"chat_ui_port cannot be the daemon port ({LISTEN_PORT})",
                                   "invalid_request_error")
+            chat_restart_required = chat_restart_required or int(update.chat_ui_port) != settings.chat_ui_port
             settings.chat_ui_port = int(update.chat_ui_port)
         persist_settings()
-        return {"ok": True}
+        return {"ok": True, "restart_required": chat_restart_required}
 
     @app.get("/api/features")
     async def features_view():
@@ -1911,16 +1918,18 @@ def create_app(
 
     @app.get("/api/usage/export.csv")
     async def usage_export_csv():
-        """Full request ledger as CSV (all columns, including green phases)."""
+        """Full request ledger as CSV (all columns, including green phases).
+
+        Streamed page by page from the usage DB (id cursor, chronological) —
+        never materialized whole in memory.
+        """
 
         def rows() -> Iterator[bytes]:
-            all_rows = usage_log.recent(db_path, 10_000_000)
-            if not all_rows:
-                yield b""
-                return
-            fields = list(all_rows[0].keys())
-            yield (",".join(fields) + "\n").encode()
-            for row in reversed(all_rows):  # chronological order
+            fields: list[str] | None = None
+            for row in usage_log.rows_ascending(db_path):
+                if fields is None:
+                    fields = list(row.keys())
+                    yield (",".join(fields) + "\n").encode()
                 cells = []
                 for field in fields:
                     value = row.get(field)
@@ -1930,6 +1939,8 @@ def create_app(
                         cell = str(value).replace('"', '""')
                         cells.append(f'"{cell}"' if ("," in cell or '"' in cell or "\n" in cell) else cell)
                 yield (",".join(cells) + "\n").encode()
+            if fields is None:
+                yield b""
 
         return StreamingResponse(rows(), media_type="text/csv",
                                  headers={"Content-Disposition": 'attachment; filename="green_requests.csv"'})
@@ -2112,7 +2123,7 @@ def create_app(
     async def router_view():
         values = router_settings_current()
         tiers = router_tiers_current()
-        problems = router_settings.block_is_valid(values, tiers)
+        problems = router_settings.setup_problems(values, tiers)
         # The stored classifier key never leaves the server: mask it the same
         # way provider keys are masked in /api/state.
         return {
@@ -2144,7 +2155,7 @@ def create_app(
                 merged_values = router_settings.normalize(merged_values)
             except ValueError as exc:
                 return error_json(400, str(exc), "invalid_request_error")
-            problems.extend(router_settings.block_is_valid(merged_values, merged_tiers))
+            problems.extend(router_settings.setup_problems(merged_values, merged_tiers))
         if update.tiers is not None:
             try:
                 merged_tiers = router_settings.normalize_tiers(update.tiers)
@@ -2183,14 +2194,11 @@ def create_app(
         routing_model: str = ""
         router_decision: dict[str, Any] | None = None
 
-    class _DummyContext(_TestRouteContext):
-        pass
-
     @app.post("/api/router/test")
     async def router_test(test: RouterTestRequest):
         values = router_settings_current()
         tiers = router_tiers_current()
-        problems = router_settings.block_is_valid(values, tiers)
+        problems = router_settings.setup_problems(values, tiers)
         if problems:
             return error_json(400, "router incomplete: " + "; ".join(problems), "invalid_request_error")
         if not values.get("enabled"):
@@ -2229,6 +2237,8 @@ def create_app(
         decision = router_engine.Decision(
             endpoint=classifier.config.endpoint_url,
             router_model=classifier.config.router_model,
+            final_tier=str(tiers[results["final_idx"]]["id"]),
+            target_model=str(tiers[results["final_idx"]]["model"]),
             raw_choice=str(answer.get("choice") or ""),
             routing_reason=str(results["routing_reason"]),
             warmth_applied=bool(results["warmth_applied"]),
@@ -2258,15 +2268,25 @@ def create_app(
 
     @app.get("/api/headroom")
     async def headroom_view():
+        values = dict(settings.headroom)
+        # The shared sidecar token is a credential: never echo it (masked
+        # everywhere else in this API — providers, router — and now here).
+        values["HEADROOM_PROXY_TOKEN"] = None
         return {
             "schema": headroom_settings.SCHEMA,
-            "values": settings.headroom,
+            "values": values,
+            "proxy_token_set": bool(settings.headroom.get("HEADROOM_PROXY_TOKEN")),
             "sidecar": {**sidecar.status(), "healthy": await sidecar_client().health()},
             "sidecar_url": settings.sidecar_url(),
         }
 
     @app.put("/api/headroom")
     async def headroom_update(update: HeadroomUpdate):
+        # Blank token = keep the stored secret (the dashboard shows "(saved —
+        # leave blank to keep)"); only an explicitly typed value replaces it.
+        incoming = dict(update.values)
+        if not str(incoming.get("HEADROOM_PROXY_TOKEN") or "").strip():
+            incoming.pop("HEADROOM_PROXY_TOKEN", None)
         previous_env = headroom_settings.sidecar_env(settings.headroom)
         previous_port = settings.headroom["sidecar_port"]
         previous_client = (
@@ -2276,7 +2296,7 @@ def create_app(
             settings.headroom["HEADROOM_PROXY_TOKEN"],
         )
         try:
-            merged = {**settings.headroom, **update.values}
+            merged = {**settings.headroom, **incoming}
             normalized = headroom_settings.normalize(merged)
         except ValueError as exc:
             return error_json(400, str(exc), "invalid_request_error")

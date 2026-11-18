@@ -423,8 +423,6 @@ def _sum_bound(objects: list[dict[str, Any]], path: tuple[str, ...]) -> dict[str
 
 def summarize(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """Totals over one session's ledger: tokens, duration, compression, green, router."""
-    from datetime import datetime
-
     requests = errors = 0
     models: dict[str, dict[str, int]] = {}
     compression = {"tokens_before": 0, "tokens_after": 0, "tokens_saved": 0}
@@ -555,14 +553,6 @@ def _percentile(sorted_values: list[float], q: float) -> float | None:
     import math
 
     return sorted_values[max(0, math.ceil(q * len(sorted_values)) - 1)]
-
-
-def _model_for(response: dict[str, Any], entries: list[dict[str, Any]]) -> str:
-    request_id = response.get("request_id")
-    for entry in entries:
-        if entry.get("type") == "request" and entry.get("request_id") == request_id and entry.get("model"):
-            return str(entry["model"])
-    return ""
 
 
 def _request_model_map(entries: list[dict[str, Any]]) -> dict[str, str]:

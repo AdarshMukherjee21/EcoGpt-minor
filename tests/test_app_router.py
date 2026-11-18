@@ -195,3 +195,29 @@ def test_router_put_accepts_tiers_and_values_together(tmp_path):
     assert resp.json()["validity"]["valid"] is True
     tier_ids = [t["id"] for t in client.get("/api/router").json()["tiers"]]
     assert tier_ids == ["goldfish", "elephant"]
+
+
+def test_router_test_endpoint_roundtrip(tmp_path):
+    """POST /api/router/test classifies and evaluates without a live classifier.
+
+    Regression: the endpoint called estimate_tokens/build_state with bare
+    names that were never imported (NameError -> HTTP 500 on its happy path).
+    """
+    client = _router_client(tmp_path)
+    response = client.post("/api/router/test", json={"prompt": "write a haiku"})
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["ok"] is True
+    decision = payload["decision"]
+    # the happy path ran: rules applied, tier chosen, no NameError 500
+    assert decision["final_tier"] == "goldfish"
+    assert decision["target_model"] == "claude-haiku-5-5"
+    assert decision["routing_reason"] not in ("classify_failed",)
+    assert decision["confidence"] == pytest.approx(0.92)
+
+
+def test_router_test_endpoint_reports_unreachable_classifier(tmp_path):
+    client = _router_client(tmp_path, fail_classify=True)
+    response = client.post("/api/router/test", json={"prompt": "write a haiku"})
+    assert response.status_code == 502
+    assert "classifier unreachable" in response.json()["error"]["message"]

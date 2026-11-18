@@ -52,7 +52,10 @@ def test_build_command_uses_venv_entrypoint_and_serve_flags() -> None:
     assert command[command.index("--host") + 1] == "127.0.0.1"
     assert command[command.index("--port") + 1] == "18091"
     head = command[0]
-    assert head.endswith("open-webui.exe") or head.endswith("python.exe")
+    # launcher resolution is cross-platform: the console script (Windows
+    # open-webui.exe / POSIX open-webui) or the -c fallback via python.
+    assert head.endswith(("open-webui.exe", "open-webui", "python.exe", "python")) \
+        or "-c" in command
 
 
 def test_build_command_honors_configured_port() -> None:

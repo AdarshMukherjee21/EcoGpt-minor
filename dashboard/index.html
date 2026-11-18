@@ -2424,7 +2424,7 @@ $("desktop-apply").onclick = () => desktopAction("apply");
 $("desktop-restore").onclick = () => desktopAction("restore");
 
 /* ---------------- Schema-Rendered Forms ---------------- */
-function fieldHtml(entry, value) {
+function fieldHtml(entry, value, opts = {}) {
   const id = `${entry.key}-field`;
   if (entry.type === "bool") {
     return `<div class="field">
@@ -2446,6 +2446,9 @@ function fieldHtml(entry, value) {
   } else if (entry.key === "api_key") {
     input = `<input type="password" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}"
       placeholder="${value && value.api_key_set ? "(saved — leave blank to keep)" : "API key"}" autocomplete="off">`;
+  } else if (entry.key === "HEADROOM_PROXY_TOKEN") {
+    input = `<input type="password" id="${id}" data-key="${entry.key}" value=""
+      placeholder="${opts.tokenSet ? "(saved — leave blank to keep)" : "Optional shared secret"}" autocomplete="off">`;
   } else {
     input = `<input type="text" id="${id}" data-key="${entry.key}" value="${esc(value ?? "")}">`;
   }
@@ -2456,8 +2459,8 @@ function fieldHtml(entry, value) {
   </div>`;
 }
 
-function renderFormInto(containerId, schema, values) {
-  $(containerId).innerHTML = (schema || []).map((e) => fieldHtml(e, (values || {})[e.key])).join("");
+function renderFormInto(containerId, schema, values, opts = {}) {
+  $(containerId).innerHTML = (schema || []).map((e) => fieldHtml(e, (values || {})[e.key], opts)).join("");
 }
 
 function readForm(containerId) {
@@ -2503,8 +2506,9 @@ async function loadCompressionSettings() {
     `&middot; healthy: <span class="${sidecar.healthy ? "ok" : "bad"}"><b>${sidecar.healthy ? "yes" : "no"}</b></span> ` +
     `&middot; endpoint <code>${esc(data.sidecar_url)}</code>`;
   const schema = data.schema || [];
-  renderFormInto("headroom-basic", schema.filter((e) => HEADROOM_ESSENTIAL.has(e.key)), data.values);
-  renderFormInto("headroom-advanced", schema.filter((e) => !HEADROOM_ESSENTIAL.has(e.key)), data.values);
+  const formOpts = { tokenSet: !!data.proxy_token_set };
+  renderFormInto("headroom-basic", schema.filter((e) => HEADROOM_ESSENTIAL.has(e.key)), data.values, formOpts);
+  renderFormInto("headroom-advanced", schema.filter((e) => !HEADROOM_ESSENTIAL.has(e.key)), data.values, formOpts);
 }
 
 ["sidecar-start", "sidecar-stop", "sidecar-restart"].forEach((id) => {

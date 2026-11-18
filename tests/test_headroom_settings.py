@@ -56,3 +56,29 @@ def test_unset_mode_is_omitted_from_request():
 def test_gateway_block_never_requests_redrive():
     block = hs.gateway_block(hs.normalize({"can_redrive": True}))
     assert block["can_redrive"] is False
+
+
+def test_blank_required_numeric_fields_snap_to_defaults():
+    """Regression: blanking a required numeric field in the dashboard sent ""
+
+    through config.json as null — daemon then failed to boot
+    (int(None) on sidecar_port) and every sessioned request 500'd
+    (int(None) on request_timeout_ms). Blank inputs must snap to defaults.
+    """
+    values = dict(hs.defaults())
+    for key in ("sidecar_port", "retries", "request_timeout_ms", "backoff_ms",
+                "token_budget", "protect_recent"):
+        values[key] = ""
+    normalized = hs.normalize(values)
+    assert normalized["sidecar_port"] == 8787
+    assert normalized["retries"] == 2
+    assert normalized["request_timeout_ms"] == 10000
+    assert normalized["backoff_ms"] == 200
+    assert normalized["token_budget"] == 1000000
+    assert normalized["protect_recent"] == 0
+
+
+def test_blank_optional_numeric_stays_none():
+    """Entries whose default IS None (optional) keep null on blank input."""
+    normalized = hs.normalize({"HEADROOM_TOOL_DESC_MAX_CHARS": ""})
+    assert normalized["HEADROOM_TOOL_DESC_MAX_CHARS"] is None
