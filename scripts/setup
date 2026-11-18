@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# ecoGPT setup: create/refresh .venv and install requirements.txt.
+# Usage: scripts/setup   (from anywhere; resolves the repo root itself)
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+PY_BIN=".venv/Scripts/python.exe"   # Windows layout used by this repo
+[ -x "$PY_BIN" ] || PY_BIN=".venv/bin/python"   # POSIX layout
+
+if [ ! -x "$PY_BIN" ]; then
+  echo "==> creating .venv"
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --python 3.13 .venv
+  else
+    python3 -m venv .venv
+  fi
+fi
+
+"$PY_BIN" - <<'EOF'
+import sys
+if sys.version_info < (3, 13):
+    sys.exit(f"python >= 3.13 required, found {sys.version.split()[0]}")
+print(f"==> python {sys.version.split()[0]} ok")
+EOF
+
+echo "==> installing requirements.txt"
+"$PY_BIN" -m pip install -r requirements.txt
+
+echo
+echo "Done. Next steps:"
+echo "  $PY_BIN -m proxy          # start the daemon on http://127.0.0.1:18090 (dashboard + /chat)"
+echo "  $PY_BIN -m pytest -q      # run the test suite"

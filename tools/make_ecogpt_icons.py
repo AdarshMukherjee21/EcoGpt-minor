@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Generate the ecoGPT icon set for the vendored deepseek-harness frontend.
+"""Generate the ecoGPT icon set for the Open WebUI chat frontend.
 
-Pure numpy + zlib (no new dependencies beyond the venv's numpy). Outputs:
+Pure numpy + zlib (no new dependencies beyond the venv's numpy). The original
+source assets lived in the removed vendor/dsh-harness tree; the generated
+icons are already in place under the dashboard/openwebui statics and this
+script is kept as the regeneration recipe. Historical output paths:
   vendor/dsh-harness/apps/web/public/favicon.svg         (light leaf, transparent)
   vendor/dsh-harness/apps/web/public/favicon-dark.svg    (dark-scheme leaf, transparent)
   vendor/dsh-harness/apps/web/public/apple-touch-icon.png (180x180 tile)
   vendor/dsh-harness/apps/web/public/icon-192.png
   vendor/dsh-harness/apps/web/public/icon-512.png
   vendor/dsh-harness/apps/web/public/icon-maskable-512.png
-  vendor/dsh-harness/apps/desktop/resources/icon.svg     (official tile source)
 
 Run:  ./.venv/Scripts/python.exe tools/make_ecogpt_icons.py
 """

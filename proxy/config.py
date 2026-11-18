@@ -51,6 +51,8 @@ class Settings:
     # classifier API key never leaves this dict (masked in every view).
     router: dict[str, Any] = field(default_factory=router_settings.defaults)
     router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
+    # Chat UI sidecar: "openwebui" (serve Open WebUI under /chat) or "off".
+    chat_ui: str = "openwebui"
 
     def __post_init__(self) -> None:
         self.migrate_providers()
@@ -121,6 +123,8 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
         stored_model_providers = raw.get("model_providers")
         if isinstance(stored_model_providers, dict):
             settings.model_providers = {str(k): str(v) for k, v in stored_model_providers.items()}
+        chat_ui = str(raw.get("chat_ui", settings.chat_ui))
+        settings.chat_ui = chat_ui if chat_ui in ("openwebui", "off") else settings.chat_ui
         stored = {
             key: value for key, value in dict(raw.get("headroom", {})).items()
             if key in {e["key"] for e in headroom_settings.SCHEMA}

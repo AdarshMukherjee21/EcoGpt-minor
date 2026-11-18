@@ -1,13 +1,13 @@
 """Wiring tests for the ecoGPT chat-UI integration in proxy/app.py.
 
 Covers (the held items, now landed):
-- GET /models alias: the dsh harness listing route (modelListingURL targets
-  {origin}/models) returns the same payload as /v1/models.
-- model_row enrichment: additive Anthropic-listing fields every harness decoder
-  needs — input_modalities, api_capabilities.anthropic_messages,
+- GET /models alias: the chat-UI model listing route returns the same payload
+  as /v1/models (Open WebUI reads the OpenAI listing from the gateway).
+- model_row enrichment: additive Anthropic-listing fields every chat-UI
+  decoder needs — input_modalities, api_capabilities.anthropic_messages,
   max_output_tokens — while Claude-Code/Desktop-consumed fields are untouched.
-- create_app wiring: the /chat router is always mounted (cold 503 without the
-  sidecar), and the sidecar lifecycle runs only with manage_chat_ui=True.
+- create_app wiring: the /chat router mounts only when manage_chat_ui=True AND
+  settings.chat_ui == "openwebui"; the sidecar lifecycle runs only then too.
 """
 from __future__ import annotations
 
@@ -82,7 +82,8 @@ def test_auto_model_row_also_enriched_when_router_offer(tmp_path) -> None:
 
 
 def test_chat_router_mounted_and_reachable(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The /chat router is mounted on the daemon app and answers requests.
+    """The /chat router is mounted on the daemon app (manage_chat_ui=True and
+    settings.chat_ui="openwebui") and answers requests.
 
     Hermetic: a stub router replaces the live one so the assertion is about
     the WIRING (the real backend behavior has its own tests)."""
@@ -96,10 +97,29 @@ def test_chat_router_mounted_and_reachable(tmp_path, monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr("proxy.app.create_chat_router", lambda *a, **k: _stub_router())
 
-    client = _client(tmp_path, ["openrouter/free"])
+    client = _client(tmp_path, ["openrouter/free"], manage_chat_ui=True)
     response = client.get("/chat", follow_redirects=False)
     assert response.status_code == 200, f"chat route body: {response.text[:300]}"
     assert b"stub-chat" in response.content
+
+
+def test_chat_router_not_mounted_when_chat_ui_off(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """settings.chat_ui="off" disables the /chat mount even with manage_chat_ui=True."""
+    settings_path = tmp_path / "config.json"
+    save_settings(Settings(upstream_url="http://gateway.test", exposed_models=["m"], chat_ui="off"),
+                  settings_path)
+    app = create_app(
+        settings_path=settings_path,
+        db_path=tmp_path / "usage.db",
+        claude_settings_path=tmp_path / "claude-settings.json",
+        desktop_app_dir=tmp_path / "Claude-3p",
+        desktop_backup_dir=tmp_path / "backup",
+        ledger_dir=tmp_path / "ledger",
+        upstream_transport=httpx.MockTransport(_upstream),
+        manage_chat_ui=True,
+    )
+    client = TestClient(app)
+    assert client.get("/chat", follow_redirects=False).status_code == 404
 
 
 def test_sidecar_lifecycle_tied_to_manage_chat_ui(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:

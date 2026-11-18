@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ecogpt"
+version = "0.1.0"
+description = "ecoGPT — local LLM gateway proxy (Anthropic/Chat/Responses) with green-metrics dashboard and Open WebUI chat at /chat"
+readme = "README.md"
+requires-python = ">=3.13"
+# Keep in sync with requirements.txt (the authoritative install list used by
+# scripts/setup).
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "httpx",
+    "headroom-ai[proxy]==0.44.0",
+    "ecologits==0.10.2",
+    "tiktoken>=0.8.0",
+    "open-webui==0.13.4",
+    "audioop-lts",
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[project.scripts]
+ecogpt = "proxy.__main__:main"
+
+[tool.setuptools]
+packages = ["proxy"]

@@ -32,7 +32,7 @@ from . import model_cache
 from . import router_engine
 from . import router_settings
 from . import trace_view
-from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_api_fallback, create_chat_router
+from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_router, create_chat_ui_fallback
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -83,6 +83,7 @@ class SettingsUpdate(BaseModel):
     model_overrides: Optional[dict[str, str]] = None
     providers: Optional[list[dict[str, Any]]] = None
     model_providers: Optional[dict[str, str]] = None
+    chat_ui: Optional[str] = None  # "openwebui" | "off"
 
 
 class GreenFactorsUpdate(BaseModel):
@@ -207,6 +208,9 @@ def create_app(
     router_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     settings = load_settings(settings_path)
+    # The chat UI sidecar follows the settings gate ("openwebui" | "off");
+    # manage_chat_ui=True (production __main__) only turns it on when allowed.
+    manage_chat_ui = manage_chat_ui and settings.chat_ui == "openwebui"
     estimation_path = Path(estimation_path or green_estimation.ESTIMATION_STATE_PATH)
     usage_log.init_db(db_path)
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0), transport=upstream_transport)
@@ -274,8 +278,8 @@ def create_app(
         for model in green_estimation.reset_stale_runs(estimation_path):
             logger.info("estimation for '%s' was interrupted by the restart; resumable via continue", model)
         start_sidecar()
-        # Chat-UI sidecar (vendored dsh-harness web app, private 3180): the
-        # /chat router below proxies it; keep its lifecycle tied to the daemon.
+        # Chat-UI sidecar (Open WebUI, private 3181): the /chat router below
+        # proxies it; keep its lifecycle tied to the daemon.
         if manage_chat_ui:
             await chat_ui_sidecar.start()
         yield
@@ -288,12 +292,12 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="ecoGPT Proxy", lifespan=lifespan)
-    # Same-origin chat UI: /chat (prefix-stripping reverse proxy onto the
-    # dsh webserver at 127.0.0.1:3180). The harness client's plugin/asset
-    # routes are document-relative (resolve under /chat/); its API_PATH is
-    # root-absolute '/api', handled by the catch-all included at the very end.
+    # Same-origin chat UI (Open WebUI sidecar): /chat is a prefix-stripping
+    # reverse proxy onto the private WebUI port; the root fallback below
+    # covers Open WebUI's root-absolute frontend paths.
     chat_ui_sidecar = ChatUISidecar(ChatUIConfig())
-    app.include_router(create_chat_router(chat_ui_sidecar, ChatUIConfig()))
+    if manage_chat_ui:
+        app.include_router(create_chat_router(chat_ui_sidecar, ChatUIConfig()))
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_unreachable(_request: Request, exc: httpx.HTTPError) -> JSONResponse:
@@ -1237,17 +1241,17 @@ def create_app(
         context_length = info.get("context_length", info.get("max_input_tokens"))
         if isinstance(context_length, (int, float)) and context_length > 0:
             row["max_input_tokens"] = int(context_length)
-        # Additive deepseek-harness listing fields: the dsh model listing
-        # decoder needs an Anthropic-Messages capability declaration (else the
-        # entry reads as unusable and is hidden from the chat-UI picker) plus
-        # the window terms it maps onto context/max-output budgets.
+        # Additive chat-UI listing fields: the model picker decoder needs an
+        # Anthropic-Messages capability declaration (else the entry reads as
+        # unusable and is hidden from the chat-UI picker) plus the window terms
+        # it maps onto context/max-output budgets.
         row["input_modalities"] = ["text"]
         row["api_capabilities"] = {"anthropic_messages": {}}
         row["max_output_tokens"] = 131072
         return row
 
     @app.get("/v1/models")
-    @app.get("/models")  # dsh harness listing: modelListingURL() targets {origin}/models
+    @app.get("/models")  # chat-UI listing alias: same payload as /v1/models
     async def list_models(limit: int | None = None, after_id: str | None = None):
         meta = await gateway_model_metadata()
         # Desktop alias ids never surface in model discovery; the picker is
@@ -1486,6 +1490,10 @@ def create_app(
             settings.exposed_models = list(dict.fromkeys(update.exposed_models))
         if update.route_overrides is not None:
             settings.route_overrides = dict(update.route_overrides)
+        if update.chat_ui is not None:
+            if update.chat_ui not in ("openwebui", "off"):
+                return error_json(400, "chat_ui must be 'openwebui' or 'off'", "invalid_request_error")
+            settings.chat_ui = update.chat_ui
         persist_settings()
         return {"ok": True}
 
@@ -2321,17 +2329,15 @@ def create_app(
         except (httpx.HTTPError, ValueError) as exc:
             return error_json(502, f"Sidecar stats unavailable: {exc}")
 
-    # Root-absolute /api catch-all for the chat SPA: the vendored harness
-    # client's API_PATH is '/api' (not document-relative), so its fetch/SSE
-    # calls and the /api/remote.mux WebSocket land on the daemon origin.
+    # Root-absolute fallback for the Open WebUI frontend (its built SPA calls
+    # /static/..., /_app/..., /manifest.json, /api/... and wss /ws/socket.io).
     # Registered LAST — Starlette matches in registration order, so every
-    # daemon /api/* route above (state, settings, green, router, usage,
-    # sessions, trace, headroom, claude, desktop, gateway, features) keeps
-    # precedence and only unmatched /api paths fall through to the sidecar.
-    # Only mounted when the chat sidecar is managed (production boot); tests
-    # keep manage_chat_ui=False and therefore the old unmatched-404 behavior.
+    # daemon route above (/, dashboard, /api/state, /api/usage, /v1/..., …)
+    # keeps precedence and only unmatched WebUI namespaces fall through to the
+    # chat sidecar. Only mounted when the chat sidecar is managed; tests keep
+    # manage_chat_ui=False and therefore the old unmatched-404 behavior.
     if manage_chat_ui:
-        app.include_router(create_chat_api_fallback(chat_ui_sidecar, ChatUIConfig()))
+        app.include_router(create_chat_ui_fallback(chat_ui_sidecar, ChatUIConfig()))
 
     return app
 

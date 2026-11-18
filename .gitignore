@@ -7,3 +7,4 @@ data/*
 !data/ikp/
 data/claude-desktop-backup/
 vendor/
+.venv-webui/

@@ -12,8 +12,8 @@ def main() -> None:
     # root handler these messages would be dropped silently.
     logging.basicConfig(level=logging.INFO,
                         format="%(levelname)s:%(name)s:%(message)s")
-    # manage_chat_ui=True: production boot owns the dsh-harness sidecar
-    # (vendored web UI served at /chat; see docs/chat-ui.md. Tests keep the
+    # manage_chat_ui=True: production boot owns the Open WebUI sidecar
+    # (chat UI served at /chat; see docs/chat-ui.md. Tests keep the
     # default False so no subprocess is ever spawned by pytest).
     uvicorn.run(create_app(manage_chat_ui=True), host=LISTEN_HOST, port=LISTEN_PORT, log_level="info")
 

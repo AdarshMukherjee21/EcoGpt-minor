@@ -1,60 +1,84 @@
-# ecoGPT Chat UI (vendored deepseek-harness) — runbook
+# ecoGPT Chat UI (Open WebUI) — runbook
 
-Status: wiring complete on the proxy side (`proxy/chat_ui.py`), **not yet mounted**
-into `proxy/app.py`. Mounting is held until the concurrent app.py edits land.
+Status: wired in `proxy/chat_ui.py` and mounted by `proxy/app.py` when
+`settings.chat_ui == "openwebui"` (default) and the daemon boots with
+`manage_chat_ui=True` (`python -m proxy`).
 
 ## What this is
 
-The user-facing chat UI is the vendored `deepseek-harness` web app:
+The user-facing chat UI is a pinned **Open WebUI** (`open-webui==0.13.4`,
+see `requirements.txt`):
 
-- Frontend+backend composition: `vendor/dsh-harness/` (original `deepseek-harness/` checkout stays pristine)
-- Served by the harness's own Node host on the private loopback port **3180**
-- The daemon reverse-proxies it at **/chat** (prefix-stripping; document-relative
-  client calls resolve to `/chat/api/...` automatically)
-- All model traffic is pinned to the ecoGPT gateway (`POST /v1/messages` on
-  127.0.0.1:18090) — the sidecar holds no upstream credentials of its own
+- Served by Open WebUI's own uvicorn host on the private loopback port **3181**.
+- The daemon reverse-proxies it at **/chat** (prefix-stripping HTTP + WS), so
+  the browser sees one origin (127.0.0.1:18090).
+- Open WebUI's frontend also calls root-absolute paths (`/static/...`,
+  `/_app/...`, `/manifest.json`, `/api/...`, `wss /ws/socket.io`). Those
+  namespaces are forwarded by a fallback router registered **last** in
+  `create_app`, so every daemon route (`/`, dashboard, `/api/state`,
+  `/api/usage`, `/v1/...`, …) keeps precedence; only unmatched WebUI
+  namespaces reach the sidecar.
+- All model traffic is pinned to the ecoGPT gateway: the sidecar gets
+  `OPENAI_API_BASE_URL=http://127.0.0.1:18090/v1` and a dummy
+  `OPENAI_API_KEY=ecogpt-managed`; the daemon performs credential
+  substitution upstream, so the sidecar holds no real credentials.
+
+## Sidecar env (set in `ChatUISidecar.build_env`)
+
+| Var | Value | Why |
+|---|---|---|
+| `WEBUI_AUTH` | `False` | loopback-only; see security note below |
+| `ENABLE_SIGNUP` | `False` | no accounts on a local sidecar |
+| `OPENAI_API_BASE_URL` | `<daemon public origin>/v1` | all chat traffic flows through the ecoGPT pipeline |
+| `OPENAI_API_KEY` | `ecogpt-managed` | dummy; the gateway substitutes its own key |
+| `OLLAMA_BASE_URL` | `http://127.0.0.1:9` | dead port — no local Ollama, OpenAI path only |
+| `DATA_DIR` | `<repo>/data/openwebui` | SQLite + uploads live under the repo |
+| `WEBUI_NAME` | `ecoGPT` | branding |
+| `WEBUI_SECRET_KEY` | fixed local string | session signing; loopback only |
+| `DO_NOT_TRACK` | `True` | telemetry off |
+
+The launch line is the venv entrypoint (the CLI ignores PORT/HOST env, so
+flags are mandatory):
+
+```sh
+.venv/Scripts/open-webui.exe serve --host 127.0.0.1 --port 3181
+```
+
+(`python -m open_webui` has no `__main__`; `proxy/chat_ui.py` falls back to
+`python -c "from open_webui import app; app()"` when the exe is absent.
+Python ≥3.13 needs `audioop-lts` for pydub — both are pinned in
+`requirements.txt`.)
+
+## Security note
+
+`WEBUI_AUTH=False` disables Open WebUI's sign-in. This is acceptable because
+both the daemon (18090) and the sidecar (3181) bind loopback only, so only
+local processes can reach them. Do not expose either port beyond loopback.
+
+## Settings gate
+
+`settings.chat_ui` (`data/config.json`) is `"openwebui"` (default) or `"off"`;
+editable via `PUT /api/settings` (`{"chat_ui": "off"}`). `"off"` unmounts
+`/chat` and the fallback namespaces and skips spawning the sidecar. A daemon
+restart is needed for the change to take effect.
 
 ## Version pin + update procedure
 
-The sidecar runs the **pinned npm distribution** (no source checkout needed at
-runtime):
-
-```sh
-npx -y @deepseek-ai/dsh@0.2.2-rc.3 --profile web --no-open --port 3180
-```
-
-- `DSH_NPM_PIN` (`proxy/chat_ui.py`) and `dsh_npm_pin` (`ChatUIConfig`) carry the
-  pin; bump both together.
+- `open-webui==0.13.4` in `requirements.txt` and `OPENWEBUI_PIN` in
+  `proxy/chat_ui.py` carry the pin; bump both together.
 - Update procedure:
-  1. Check the release notes at the deepseek-harness repository (developer
-     preview; compatibility-breaking changes are common).
-  2. `npm view @deepseek-ai/dsh versions` to pick the next pin.
-  3. Re-verify with the Phase-0 spike: boot the sidecar, confirm the entry URL
-     prints, a chat turn appears in the dashboard ledger, and the model picker
-     lists exactly the gateway's exposed models.
-  4. Update `DSH_NPM_PIN` in `proxy/chat_ui.py`, run `pytest tests/test_chat_ui.py`.
+  1. Check the Open WebUI release notes (breaking changes are common).
+  2. `pip index versions open-webui` (or the release page) to pick the next pin.
+  3. Reinstall the venv (`scripts/setup`), boot the daemon, and re-verify the
+     live checklist: `GET /chat/` → 200 SPA HTML (no sign-in), an SPA asset
+     through `/chat`, `GET /chat/api/config` → proxied 200, the socket.io WS
+     path answers, and a chat completion flows through `/v1/...` into the
+     dashboard ledger.
+  4. Update the pin in both places, run `./.venv/Scripts/python.exe -m pytest -q`.
 
-### Update procedure (vendored copy branding)
+## License caveat
 
-Source-built features (rebranding, sidebar Dashboard button) require a source
-build of `vendor/dsh-harness/` (pnpm ≥11, Node ≥24.9 to build). Those patches
-are documented in the vendored tree:
-
-- `packages/client/ui-primitives/src/FishLogo.tsx` — brand mark (leaf)
-- `packages/client/ui-primitives/src/BrandWordmark.tsx` — brand wordmark (text)
-- `packages/client/locale/src/locales/*.ts` — `brand.localBuild` → `ecoGPT`
-- `packages/client/ui-brand-official/src/client/index.ts` — PixelWhale hero frame unmounted
-- `packages/client/ui-conversation/.../EmptyHero.tsx` — SMIL swim morphs removed
-- `apps/web/index.html` + `apps/web/public/manifest.webmanifest` — title + PWA names
-- Regenerate PNG icons with `./.venv/Scripts/python.exe tools/make_ecogpt_icons.py`
-
-## Model restriction (config-only)
-
-- `llm-deepseek.baseURL = http://127.0.0.1:18090` in the dsh user profile
-  (`~/.dsh/profiles/web/cordis.patch.yml`) → every chat request flows through
-  the ecoGPT gateway pipeline (compression → router → tracing → provider).
-- The gateway performs **credential substitution**: the sidecar's dummy
-  `DEEPSEEK_API_KEY=ecogpt-local-dummy` is never honored upstream.
-- The model picker is seeded from the gateway's exposed models; a live listing
-  upgrade path exists via `GET /models` on the gateway (still needs the alias
-  route + row enrichment in `proxy/app.py` — held wiring).
+Open WebUI is **not** OSI-licensed (its "Open WebUI Modified License" restricts
+some commercial/SaaS reuse). ecoGPT bundles it as a local, loopback-only
+sidecar; if you redistribute or offer ecoGPT as a hosted service, review that
+license first.

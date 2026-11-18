@@ -5,19 +5,16 @@ ecoGPT chat harness) and model gateways. Every model request flows through one
 pipeline: **identify → ledger → compress → route → observe → relay**, so the
 dashboard sees green metrics, token usage, cost and full session traceability.
 
-Adopted from the mdao_hackathon Token Proxy codebase; this repo is the
-integrated v1.
-
 ## Endpoints
 
 Ingress (all served on one proxy):
 
-| Endpoint | Format |
-|---|---|
-| `POST /v1/messages` (+ `/count_tokens`) | Anthropic Messages |
-| `POST /v1/chat/completions` | OpenAI Chat Completions |
-| `POST /v1/responses` | OpenAI Responses |
-| `GET /v1/models` | Anthropic shape |
+| Endpoint                                | Format                  |
+| --------------------------------------- | ----------------------- |
+| `POST /v1/messages` (+ `/count_tokens`) | Anthropic Messages      |
+| `POST /v1/chat/completions`             | OpenAI Chat Completions |
+| `POST /v1/responses`                    | OpenAI Responses        |
+| `GET /v1/models`                        | Anthropic shape         |
 
 Requests are routed per model: `claude-*` → gateway `/v1/messages` (passthrough),
 `gpt-*` → gateway `/v1/responses` (translated from Anthropic Messages), with
@@ -95,7 +92,7 @@ Defaults are explicit scenarios, never inferred data. When the `green_metrics`
 feature flag is on, `proxy/green_impact.py` computes five impact categories per
 request — energy (kWh, min/mean/max), GWP (kgCO₂e, min/mean/max), water (L),
 ADPe (kgSbeq) and primary energy (MJ) — from the active/total parameters of the
-*effective upstream model*, the observed request duration and, when streaming
+_effective upstream model_, the observed request duration and, when streaming
 observed them, TPS and time-to-first-token, via EcoLogits'
 `compute_llm_impacts()`.
 
