@@ -69,6 +69,97 @@ Requests are routed per model id by default (`claude-*` → Anthropic-style
 upstream, `gpt-*`/others → Responses/Chat-style upstream), with per-model
 `route_overrides` and aliasing `model_overrides` configurable in the dashboard.
 
+## Screenshots
+
+All from the dashboard at `http://127.0.0.1:18090` unless noted.
+
+### Overview — traffic, savings, footprint
+
+![Dashboard overview: stat cards and environmental footprint](<screenshots/Screenshot (192).png>)
+
+The Overview page leads with what matters at a glance: proxied request count,
+tokens in, tokens **saved by compression** (Headroom), cost, and the
+environmental footprint cards — energy (Wh), carbon (g CO₂e), water (mL),
+provider cache hits and compression fallbacks — with an honest coverage note
+(requests without an estimate are excluded, never counted as zero).
+
+![Recent requests table and daily charts](<screenshots/Screenshot (193).png>)
+
+Scrolling down: the recent-requests ledger — model, route, input/output/cache
+tokens, tokens saved, latency, CO₂e, water, impact basis and HTTP status per
+call — plus tokens-per-day and cost-per-day charts and an export-to-CSV button.
+
+![Energy by model, per-model basis table, methodology attribution](<screenshots/Screenshot (194).png>)
+
+The green detail: energy per model (bar = mean, whiskers = min–max), a per-model
+table with each row's basis (here `USER-OVERRIDE`), provenance for every number
+(EcoLogits 0.10.2 catalogue, dataset revision, region scenario, PUE/WUE source),
+attribution/license strings for the methodology, and the recent sessions list
+that deep-links into Live Trace.
+
+### Live Trace — per-session trajectory
+
+![Live Trace: session waterfall and per-step forensics](<screenshots/Screenshot (195).png>)
+
+The multi-lane trajectory inspector: a duration waterfall across pipeline lanes
+(input / router / model / tools) for each session, the step list with routing
+badges, and a step-forensics panel — requested model vs. served model
+(`claude-eco-1` → `baidu/ernie-5.5-flash-preview:free`), chosen tier (`goldfish`),
+route, status, duration, TTFT, and the span waterfall (request → compression →
+router → upstream) showing where the 3.15 s actually went.
+
+### Setup & Providers — clients, gateways, models, features
+
+![One-click Claude Code / Desktop setup and upstream providers](<screenshots/Screenshot (196).png>)
+
+One-click client integration: Claude Code and Claude Desktop each get an
+Apply/Restore-original card (byte-for-byte backup of their existing settings),
+plus the upstream provider list — up to 3 gateways, masked API keys
+("leave blank to keep"), first provider as default.
+
+![Model exposure with per-model route and provider pinning, feature flags](<screenshots/Screenshot (197).png>)
+
+Model exposure (14 models here): checkbox per model, the wire format each model
+speaks (`chat` / `responses` / `anthropic`), and per-model provider pinning —
+followed by the proxy feature toggles (compression, green metrics, session
+tracing, run label).
+
+### Compression — Headroom sidecar
+
+![Compression settings and Headroom sidecar controls](<screenshots/Screenshot (198).png>)
+
+The Headroom compression sidecar's lifecycle (running, healthy, endpoint,
+start/stop/restart, optional Kompress ML model download) and its prompt posture:
+mode (`cache` keeps provider prompt caches intact), savings profile, context
+limit, failure behavior, and per-turn usage posting.
+
+### System One Router — the tier ladder
+
+![System One Router tier ladder and classifier endpoint](<screenshots/Screenshot (199).png>)
+
+The auto model (`eco-auto`) gets classified per turn by a System One decision
+endpoint and dispatched down a tier ladder — here `goldfish` (routine execution
+→ `openrouter/free`) and `elephant` (planning → `baidu/ernie-…`). Classifier
+endpoint presets (local Ollama, OpenRouter) with credentials stored server-side.
+
+### Green Metrics — region & calibration
+
+![Green metrics region and calibration settings](<screenshots/Screenshot (200).png>)
+
+Region scenario (country, grid-intensity bounds, PUE bounds) and calibration
+knobs (cached-input fraction, input/output energy ratio, embodied share) that
+feed the EcoLogits impact math; below, the per-model expert profiles.
+
+### Chat UI — Open WebUI via the gateway
+
+![ecoGPT chat (Open WebUI on port 18091) with the auto model selected](<screenshots/Screenshot (201).png>)
+
+The built-in chat UI — pinned Open WebUI on its own port (18091), reached via
+the dashboard's **Open Chat** button (`/chat`). The model picker shows the
+exposed gateway models including `eco-auto`; every message flows back through
+the daemon's pipeline, so chats appear in the ledger, usage and green metrics
+like any other client.
+
 ## Configuration
 
 Everything user-configurable lives in `data/config.json` and is edited live
