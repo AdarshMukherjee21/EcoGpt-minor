@@ -16,6 +16,10 @@ Design:
   besides the ``/chat`` prefix proxy the daemon registers a LAST-resort
   fallback router (``create_chat_ui_fallback``) for those namespaces;
   Starlette registration order keeps every daemon route ahead of it.
+- The built SPA is a SvelteKit app whose client router base is baked into the
+  served HTML (``__sveltekit_* = { base: "" }``). Served under ``/chat`` that
+  base is wrong (the router 404s on ``/chat/``), so the ``/chat`` proxy
+  rewrites it to ``base: "/chat"`` in HTML responses (``_rewrite_spa_base``).
 - Telemetry: ``DO_NOT_TRACK=True`` is set for the sidecar.
 """
 
@@ -217,11 +221,11 @@ def create_chat_router(
 
     @router.api_route(cfg.chat_prefix + "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
     async def proxy(path: str, request: Request) -> Response:
-        return await _proxy_request_shared(cfg, request, path)
+        return await _proxy_request_shared(cfg, request, path, rewrite_spa_base=True)
 
     @router.get(cfg.chat_prefix)
     async def chat_root(request: Request) -> Response:
-        return await _proxy_request_shared(cfg, request, path="")
+        return await _proxy_request_shared(cfg, request, path="", rewrite_spa_base=True)
 
     @router.websocket(cfg.chat_prefix + "/{path:path}")
     async def ws_tunnel(path: str, websocket: WebSocket) -> None:
@@ -267,12 +271,24 @@ def create_chat_ui_fallback(
     return router
 
 
-async def _proxy_request_shared(cfg: ChatUIConfig, request: Request, path: str) -> Response:
+# SvelteKit injects the client-router base into the served HTML as
+# ``__sveltekit_<hash> = { base: "" }``. Under /chat it must become "/chat".
+_SPA_BASE_RE = re.compile(rb'(__sveltekit_[0-9a-z]+\s*=\s*\{\s*base:\s*)""')
+
+
+def _rewrite_spa_base(data: bytes, prefix: str) -> bytes:
+    """Point the SvelteKit client router at the /chat prefix (HTML only)."""
+    return _SPA_BASE_RE.sub(rb'\g<1>"' + prefix.encode() + rb'"', data, count=1)
+
+
+async def _proxy_request_shared(cfg: ChatUIConfig, request: Request, path: str,
+                                rewrite_spa_base: bool = False) -> Response:
     """Proxy core shared by the /chat router and the root fallback.
 
     - forwards the browser's Host header (upstream vhosts/fences key off it),
     - forwards the RAW query string (combo/asset URLs must survive verbatim),
     - strips content-encoding on buffered bodies (httpx already decoded them),
+    - rewrites the SvelteKit base in HTML when serving under /chat,
     - cold sidecar → 503 "starting" page.
     """
     headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
@@ -301,6 +317,8 @@ async def _proxy_request_shared(cfg: ChatUIConfig, request: Request, path: str) 
     data = await upstream_response.aread()
     await upstream_response.aclose()
     await client.aclose()
+    if rewrite_spa_base and "text/html" in content_type:
+        data = _rewrite_spa_base(data, cfg.chat_prefix)
     return Response(data, status_code=upstream_response.status_code,
                     headers={k: v for k, v in upstream_response.headers.items()
                              # Response() recomputes length; content-encoding must go too:
