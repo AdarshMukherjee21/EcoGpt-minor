@@ -16,6 +16,9 @@ Design:
   besides the ``/chat`` prefix proxy the daemon registers a LAST-resort
   fallback router (``create_chat_ui_fallback``) for those namespaces;
   Starlette registration order keeps every daemon route ahead of it.
+  The same fallback ends in an HTML-browser catch-all that bounces unknown
+  root paths into ``/chat`` — covering the SPA's hardcoded root-absolute
+  full-page jumps (session loss → ``/auth?...``).
 - The built SPA is a SvelteKit app whose client router base is baked into the
   served HTML (``__sveltekit_* = { base: "" }``). Served under ``/chat`` that
   base is wrong (the router 404s on ``/chat/``), so the ``/chat`` proxy
@@ -36,9 +39,9 @@ from typing import Any, Callable, Coroutine
 from urllib.parse import urlsplit
 
 import httpx
-from fastapi import APIRouter, Request, Response, WebSocket
+from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
 from starlette.background import BackgroundTask
-from starlette.responses import StreamingResponse
+from starlette.responses import RedirectResponse, StreamingResponse
 
 log = logging.getLogger("proxy.chat_ui")
 
@@ -267,6 +270,22 @@ def create_chat_ui_fallback(
         @router.websocket(prefix + "{rest:path}")
         async def ws_fallback(rest: str, websocket: WebSocket, _prefix: str = prefix) -> None:
             await _tunnel_ws(websocket, cfg, "/" + _prefix.lstrip("/") + rest, ws_connect)
+
+    # Catch-all, registered after everything else in this router. Open WebUI's
+    # SPA hardcodes a few root-absolute full-page jumps (``window.location.href
+    # = "/auth?..."`` on session loss, OAuth callbacks, …), which bypass the
+    # SvelteKit router base and land on daemon 404s. A browser navigation to an
+    # otherwise-unknown path is bounced into the /chat prefix, where the SPA
+    # then handles it client-side. Non-browser requests keep the JSON 404.
+    @router.api_route("/{path:path}", methods=["GET", "HEAD"])
+    async def html_bounce(path: str, request: Request) -> Response:
+        if "text/html" not in request.headers.get("accept", ""):
+            raise HTTPException(status_code=404, detail="Not Found")
+        target = cfg.chat_prefix + "/" + path
+        if request.url.query:
+            target += "?" + request.url.query
+        return RedirectResponse(target, status_code=307,
+                                 headers={"cache-control": "no-store"})
 
     return router
 
