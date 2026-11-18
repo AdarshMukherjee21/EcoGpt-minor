@@ -243,6 +243,13 @@ code {
   color: var(--accent);
   border-color: transparent;
 }
+/* The chat entry is a link, not a view switch: same look, real navigation. */
+a.nav-item.nav-link {
+  text-decoration: none;
+}
+a.nav-item.nav-link:hover {
+  text-decoration: none;
+}
 
 .sidebar-footer {
   padding: 12px;
@@ -1438,6 +1445,14 @@ details.adv summary::marker { color: var(--accent); }
 
     <div class="nav-scroll">
       <div class="nav-section">
+        <div class="nav-section-label">Chat</div>
+        <a class="nav-item nav-link" href="/chat" id="nav-chat" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Open Chat
+        </a>
+      </div>
+
+      <div class="nav-section">
         <div class="nav-section-label">Telemetry</div>
         <button class="nav-item active" data-route-view="dashboard" id="nav-dashboard">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
@@ -2108,6 +2123,7 @@ function show(view, settingsTab = "general") {
 }
 
 document.querySelectorAll(".nav-item").forEach((btn) => {
+  if (btn.tagName === "A") return;  // the chat link navigates, not a view switch
   btn.onclick = () => show(btn.dataset.routeView, btn.dataset.settingsTab || "general");
 });
 
@@ -2150,6 +2166,8 @@ function labelFor(id) {
 async function loadState() {
   STATE = await api("/api/state");
   const s = STATE.settings;
+  const chat = STATE.chat || {};
+  $("nav-chat").style.display = chat.ui === "openwebui" && chat.enabled ? "" : "none";
   $("status-dot").classList.remove("down");
   $("status-title").textContent = "Proxy Online";
   $("status").innerHTML = `

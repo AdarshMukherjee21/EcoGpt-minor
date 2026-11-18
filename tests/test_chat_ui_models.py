@@ -6,8 +6,8 @@ Covers (the held items, now landed):
 - model_row enrichment: additive Anthropic-listing fields every chat-UI
   decoder needs — input_modalities, api_capabilities.anthropic_messages,
   max_output_tokens — while Claude-Code/Desktop-consumed fields are untouched.
-- create_app wiring: the /chat router mounts only when manage_chat_ui=True AND
-  settings.chat_ui == "openwebui"; the sidecar lifecycle runs only then too.
+- create_app wiring: the /chat link router mounts only when manage_chat_ui=True
+  AND settings.chat_ui == "openwebui"; the sidecar lifecycle runs only then too.
 """
 from __future__ import annotations
 
@@ -82,8 +82,8 @@ def test_auto_model_row_also_enriched_when_router_offer(tmp_path) -> None:
 
 
 def test_chat_router_mounted_and_reachable(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The /chat router is mounted on the daemon app (manage_chat_ui=True and
-    settings.chat_ui="openwebui") and answers requests.
+    """The /chat link router is mounted on the daemon app (manage_chat_ui=True
+    and settings.chat_ui="openwebui") and answers requests.
 
     Hermetic: a stub router replaces the live one so the assertion is about
     the WIRING (the real backend behavior has its own tests)."""
@@ -95,7 +95,7 @@ def test_chat_router_mounted_and_reachable(tmp_path, monkeypatch: pytest.MonkeyP
         router.add_api_route("/chat", stub_route, methods=["GET"])
         return router
 
-    monkeypatch.setattr("proxy.app.create_chat_router", lambda *a, **k: _stub_router())
+    monkeypatch.setattr("proxy.app.create_chat_link_router", lambda *a, **k: _stub_router())
 
     client = _client(tmp_path, ["openrouter/free"], manage_chat_ui=True)
     response = client.get("/chat", follow_redirects=False)

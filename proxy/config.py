@@ -51,8 +51,10 @@ class Settings:
     # classifier API key never leaves this dict (masked in every view).
     router: dict[str, Any] = field(default_factory=router_settings.defaults)
     router_tiers: list[dict[str, Any]] = field(default_factory=router_settings.default_tiers)
-    # Chat UI sidecar: "openwebui" (serve Open WebUI under /chat) or "off".
+    # Chat UI sidecar: "openwebui" (serve Open WebUI on its own local port)
+    # or "off". The port is the sidecar's own loopback listen (not proxied).
     chat_ui: str = "openwebui"
+    chat_ui_port: int = 18091
 
     def __post_init__(self) -> None:
         self.migrate_providers()
@@ -125,6 +127,11 @@ def load_settings(path: Path = CONFIG_PATH) -> Settings:
             settings.model_providers = {str(k): str(v) for k, v in stored_model_providers.items()}
         chat_ui = str(raw.get("chat_ui", settings.chat_ui))
         settings.chat_ui = chat_ui if chat_ui in ("openwebui", "off") else settings.chat_ui
+        try:
+            chat_ui_port = int(raw.get("chat_ui_port", settings.chat_ui_port))
+        except (TypeError, ValueError):
+            chat_ui_port = settings.chat_ui_port
+        settings.chat_ui_port = chat_ui_port if 1024 <= chat_ui_port <= 65535 and chat_ui_port != LISTEN_PORT else settings.chat_ui_port
         stored = {
             key: value for key, value in dict(raw.get("headroom", {})).items()
             if key in {e["key"] for e in headroom_settings.SCHEMA}

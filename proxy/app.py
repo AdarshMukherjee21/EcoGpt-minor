@@ -32,7 +32,7 @@ from . import model_cache
 from . import router_engine
 from . import router_settings
 from . import trace_view
-from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_router, create_chat_ui_fallback
+from .chat_ui import ChatUIConfig, ChatUISidecar, create_chat_link_router
 from . import usage as usage_log
 from .model_names import pretty_name
 from .config import (
@@ -84,6 +84,7 @@ class SettingsUpdate(BaseModel):
     providers: Optional[list[dict[str, Any]]] = None
     model_providers: Optional[dict[str, str]] = None
     chat_ui: Optional[str] = None  # "openwebui" | "off"
+    chat_ui_port: Optional[int] = None  # loopback port of the Open WebUI sidecar
 
 
 class GreenFactorsUpdate(BaseModel):
@@ -211,6 +212,7 @@ def create_app(
     # The chat UI sidecar follows the settings gate ("openwebui" | "off");
     # manage_chat_ui=True (production __main__) only turns it on when allowed.
     manage_chat_ui = manage_chat_ui and settings.chat_ui == "openwebui"
+    chat_ui_config = ChatUIConfig(webui_port=int(settings.chat_ui_port))
     estimation_path = Path(estimation_path or green_estimation.ESTIMATION_STATE_PATH)
     usage_log.init_db(db_path)
     client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0), transport=upstream_transport)
@@ -278,8 +280,8 @@ def create_app(
         for model in green_estimation.reset_stale_runs(estimation_path):
             logger.info("estimation for '%s' was interrupted by the restart; resumable via continue", model)
         start_sidecar()
-        # Chat-UI sidecar (Open WebUI, private 3181): the /chat router below
-        # proxies it; keep its lifecycle tied to the daemon.
+        # Chat-UI sidecar (Open WebUI, own loopback port): the /chat router
+        # below redirects to it; keep its lifecycle tied to the daemon.
         if manage_chat_ui:
             await chat_ui_sidecar.start()
         yield
@@ -292,12 +294,12 @@ def create_app(
         await client.aclose()
 
     app = FastAPI(title="ecoGPT Proxy", lifespan=lifespan)
-    # Same-origin chat UI (Open WebUI sidecar): /chat is a prefix-stripping
-    # reverse proxy onto the private WebUI port; the root fallback below
-    # covers Open WebUI's root-absolute frontend paths.
-    chat_ui_sidecar = ChatUISidecar(ChatUIConfig())
+    # Chat UI (Open WebUI sidecar on its own port): /chat is a pointer, not a
+    # proxy — it redirects to the sidecar origin, or serves a "starting" page
+    # while the sidecar is cold-booting.
+    chat_ui_sidecar = ChatUISidecar(chat_ui_config)
     if manage_chat_ui:
-        app.include_router(create_chat_router(chat_ui_sidecar, ChatUIConfig()))
+        app.include_router(create_chat_link_router(chat_ui_sidecar, chat_ui_config))
 
     @app.exception_handler(httpx.HTTPError)
     async def upstream_unreachable(_request: Request, exc: httpx.HTTPError) -> JSONResponse:
@@ -1392,6 +1394,13 @@ def create_app(
 
         return {
             "proxy_url": settings.proxy_url(),
+            "chat": {
+                "enabled": manage_chat_ui,
+                "ui": settings.chat_ui,
+                # The browser-facing Open WebUI origin (dashboard "Chat" target
+                # redirects there via /chat).
+                "url": chat_ui_config.chat_url(),
+            },
             "settings": {
                 "upstream_url": settings.upstream_url,
                 "api_key_set": bool(settings.effective_key()),
@@ -1494,6 +1503,14 @@ def create_app(
             if update.chat_ui not in ("openwebui", "off"):
                 return error_json(400, "chat_ui must be 'openwebui' or 'off'", "invalid_request_error")
             settings.chat_ui = update.chat_ui
+        if update.chat_ui_port is not None:
+            if not 1024 <= int(update.chat_ui_port) <= 65535:
+                return error_json(400, "chat_ui_port must be between 1024 and 65535",
+                                  "invalid_request_error")
+            if int(update.chat_ui_port) == LISTEN_PORT:
+                return error_json(400, f"chat_ui_port cannot be the daemon port ({LISTEN_PORT})",
+                                  "invalid_request_error")
+            settings.chat_ui_port = int(update.chat_ui_port)
         persist_settings()
         return {"ok": True}
 
@@ -2328,16 +2345,6 @@ def create_app(
             return await sidecar_client().stats()
         except (httpx.HTTPError, ValueError) as exc:
             return error_json(502, f"Sidecar stats unavailable: {exc}")
-
-    # Root-absolute fallback for the Open WebUI frontend (its built SPA calls
-    # /static/..., /_app/..., /manifest.json, /api/... and wss /ws/socket.io).
-    # Registered LAST — Starlette matches in registration order, so every
-    # daemon route above (/, dashboard, /api/state, /api/usage, /v1/..., …)
-    # keeps precedence and only unmatched WebUI namespaces fall through to the
-    # chat sidecar. Only mounted when the chat sidecar is managed; tests keep
-    # manage_chat_ui=False and therefore the old unmatched-404 behavior.
-    if manage_chat_ui:
-        app.include_router(create_chat_ui_fallback(chat_ui_sidecar, ChatUIConfig()))
 
     return app
 

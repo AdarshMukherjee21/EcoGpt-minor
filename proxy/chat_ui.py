@@ -1,28 +1,22 @@
-"""ecoGPT chat-UI sidecar — Open WebUI under /chat on the daemon's origin.
+"""ecoGPT chat-UI sidecar — Open WebUI on its own local port.
 
 Design:
 
-- The chat UI is a pinned Open WebUI (0.13.x) served by its own uvicorn host on
-  a private loopback port (default 3181). This module manages that subprocess
-  and reverse-proxies HTTP + WebSocket traffic under ``/chat`` on the daemon's
-  origin, so the browser sees one origin (18090).
+- The chat UI is a pinned Open WebUI (0.13.x) served UNMODIFIED on its own
+  loopback port (default 18091) by its own uvicorn host. Reverse-proxying it
+  under a daemon prefix was tried and abandoned: Open WebUI's SvelteKit SPA
+  bakes a root base into its HTML and hardcodes root-absolute full-page
+  jumps, and its socket.io/WebSocket layer is fragile behind a tunnel.
+  Serving it natively on a dedicated origin removes all of those seams.
+- This module owns that subprocess and a tiny daemon router:
+  GET /chat redirects to the Open WebUI origin when it is up, and serves a
+  "starting" page (auto-retry) while it is not. The dashboard links to it.
 - Model traffic does NOT come from here: Open WebUI is pointed at the ecoGPT
-  gateway via ``OPENAI_API_BASE_URL=<daemon public origin>/v1`` and a dummy
+  gateway via ``OPENAI_API_BASE_URL=<daemon origin>/v1`` and a dummy
   ``OPENAI_API_KEY``; the daemon performs credential substitution upstream.
 - ``WEBUI_AUTH=False`` (loopback-only deployment, see the tradeoff note in
-  ``ChatUISidecar.start``): no sign-in, so a cold ``/chat`` load just proxies.
-- Open WebUI's frontend references root-absolute paths (``/static/...``,
-  ``/_app/...``, ``/manifest.json``, ``/api/...``, ``/ws/socket.io``), so
-  besides the ``/chat`` prefix proxy the daemon registers a LAST-resort
-  fallback router (``create_chat_ui_fallback``) for those namespaces;
-  Starlette registration order keeps every daemon route ahead of it.
-  The same fallback ends in an HTML-browser catch-all that bounces unknown
-  root paths into ``/chat`` — covering the SPA's hardcoded root-absolute
-  full-page jumps (session loss → ``/auth?...``).
-- The built SPA is a SvelteKit app whose client router base is baked into the
-  served HTML (``__sveltekit_* = { base: "" }``). Served under ``/chat`` that
-  base is wrong (the router 404s on ``/chat/``), so the ``/chat`` proxy
-  rewrites it to ``base: "/chat"`` in HTML responses (``_rewrite_spa_base``).
+  ``ChatUISidecar.build_env``): no sign-in; the UI auto-provisions
+  ``admin@localhost`` on first use.
 - Telemetry: ``DO_NOT_TRACK=True`` is set for the sidecar.
 """
 
@@ -36,12 +30,10 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Coroutine
-from urllib.parse import urlsplit
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response, WebSocket
-from starlette.background import BackgroundTask
-from starlette.responses import RedirectResponse, StreamingResponse
+from fastapi import APIRouter, Response
+from starlette.responses import HTMLResponse, RedirectResponse
 
 log = logging.getLogger("proxy.chat_ui")
 
@@ -49,37 +41,57 @@ log = logging.getLogger("proxy.chat_ui")
 # docs/chat-ui.md ("Updating the pinned Open WebUI").
 OPENWEBUI_PIN = "0.13.4"
 
-# The private port the Open WebUI server binds (loopback only; never advertised).
-WEBUI_PORT = 3181
+# Default port the Open WebUI server binds (loopback only). Adjacent to the
+# daemon's 18090 so the pair reads as one product; overridable in settings.
+WEBUI_PORT = 18091
 
-# Daemon-side prefix of the chat UI (same-origin with the dashboard).
+# Daemon-side path that links/redirects to the chat UI (dashboard target).
 CHAT_PREFIX = "/chat"
-
-# Root-absolute URL namespaces the Open WebUI frontend uses. The fallback
-# router forwards these to the sidecar (registered last on the daemon, so
-# daemon routes always win). /ws is WebSocket-only.
-WEBUI_HTTP_PREFIXES = ("/api/", "/static/", "/_app/", "/assets/", "/audio/",
-                       "/ollama/", "/openai/", "/retrieval/", "/ws/")
-WEBUI_HTTP_EXACT = ("/manifest.json", "/robots.txt", "/svelte.config.js")
-WEBUI_WS_PREFIXES = ("/ws/",)
-
-# Hop-by-hop headers that must never be forwarded in either direction.
-_HOP_HEADERS = {"connection", "keep-alive", "proxy-authenticate", "proxy-authorization",
-                "te", "trailer", "transfer-encoding", "upgrade", "host",
-                "content-length"}
 
 # ANSI/OSC escape sequences (piped stdout interleaves OSC title sets from the
 # npm-style wrappers); stripped per line so logs stay readable.
 _ANSI_RE = re.compile(r"\x1b(?:\][^\x07\x1b]*(?:\x07|\x1b\\)|\[[0-?]*[ -/]*[@-~]|[@-\\])")
 
+# "Chat is starting" page served while the sidecar cold-boots (first boot
+# imports the whole Open WebUI backend and runs DB migrations). Auto-reloads
+# so the browser lands on the redirect as soon as the sidecar is up.
+_STARTING_PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ecoGPT chat is starting</title>
+<meta http-equiv="refresh" content="3">
+<style>
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         background: #0e1116; color: #e6e8eb;
+         font: 14px/1.6 ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif; }
+  .card { text-align: center; padding: 32px 40px; border-radius: 12px;
+          background: #151a21; border: 1px solid #232a33; }
+  h1 { font-size: 16px; font-weight: 600; margin: 0 0 6px; }
+  p { margin: 0.2em 0; color: #9aa4b0; }
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>ecoGPT chat is starting</h1>
+    <p>Open WebUI takes a moment on first boot.</p>
+    <p>This page reloads automatically&hellip;</p>
+  </div>
+</body>
+</html>
+"""
+
 
 @dataclass
 class ChatUIConfig:
-    """Where the Open WebUI server lives and how the daemon advertises it."""
+    """Where the Open WebUI server lives and how the daemon links to it."""
 
-    upstream_origin: str = f"http://127.0.0.1:{WEBUI_PORT}"
+    # Loopback port the Open WebUI server binds (its own origin, not proxied).
+    webui_port: int = WEBUI_PORT
+    # Daemon origin: used for OPENAI_API_BASE_URL (server-side traffic) so
+    # all chat requests flow through the ecoGPT pipeline.
     public_origin: str = "http://127.0.0.1:18090"
-    chat_prefix: str = CHAT_PREFIX
     # Branding + loopback-only auth posture of the sidecar.
     webui_name: str = "ecoGPT"
     webui_secret_key: str = "ecogpt-local-webui-secret"  # fixed local string; loopback only
@@ -94,6 +106,18 @@ class ChatUIConfig:
     # Seconds to wait for the sidecar to answer its first request (cold import
     # + DB migrations are slow on first boot).
     ready_timeout_s: float = 180.0
+
+    def webui_url(self) -> str:
+        return f"http://127.0.0.1:{self.webui_port}"
+
+    def chat_url(self, path: str = "") -> str:
+        """Where the daemon sends the browser: the Open WebUI origin root.
+
+        ``/chat/<rest>`` daemon paths map to ``/<rest>`` on the sidecar (the
+        SPA lives at its own origin root).
+        """
+        rest = (path or "").strip("/")
+        return self.webui_url() + ("/" + rest if rest else "/")
 
     def resolved_data_dir(self) -> str:
         if self.data_dir:
@@ -129,17 +153,16 @@ class ChatUISidecar:
             launcher: list[str] = [str(exe)]
         else:
             launcher = [sys.executable, "-c", "from open_webui import app; app()"]
-        port = urlsplit(self.cfg.upstream_origin).port or WEBUI_PORT
-        return [*launcher, "serve", "--host", "127.0.0.1", "--port", str(port)]
+        return [*launcher, "serve", "--host", "127.0.0.1", "--port", str(self.cfg.webui_port)]
 
     def build_env(self) -> dict[str, str]:
         """The sidecar environment: ecoGPT gateway as the only model backend.
 
-        Security tradeoff note: WEBUI_AUTH=False disables Open WebUI's sign-in.
-        This is acceptable because both the daemon and the sidecar bind
-        loopback only, so only local processes can reach them; the sidecar
-        holds no upstream credentials (OPENAI_API_KEY is a dummy — the daemon
-        substitutes its own).
+        Security tradeoff note: WEBUI_AUTH=False disables Open WebUI's
+        sign-in. This is acceptable because both the daemon and the sidecar
+        bind loopback only, so only local processes can reach them; the
+        sidecar holds no upstream credentials (OPENAI_API_KEY is a dummy —
+        the daemon substitutes its own).
         """
         env = dict(os.environ)
         env.update({
@@ -159,7 +182,7 @@ class ChatUISidecar:
     async def start(self) -> None:
         """Spawn the sidecar and start its output reader."""
         command = self.build_command()
-        log.info("chat-UI sidecar starting: %s", " ".join(command))
+        log.info("chat-UI sidecar starting on port %s: %s", self.cfg.webui_port, " ".join(command))
         self._proc = await asyncio.create_subprocess_exec(
             *command,
             stdout=asyncio.subprocess.PIPE,
@@ -169,26 +192,29 @@ class ChatUISidecar:
         self._reader = asyncio.create_task(self._read_output(), name="chat-ui-output-reader")
 
     async def _read_output(self) -> None:
-        """Consume sidecar stdout (log relay only; no token harvest anymore)."""
+        """Consume sidecar stdout (log relay only)."""
         assert self._proc is not None and self._proc.stdout is not None
         async for raw in self._proc.stdout:
             line = _ANSI_RE.sub("", raw.decode("utf-8", errors="replace")).rstrip()
             if line:
                 log.info("chat-ui: %s", line)
 
+    async def _probe(self, timeout: float = 2.0) -> bool:
+        """True when the sidecar answers ANY HTTP response (200 counts)."""
+        try:
+            async with httpx.AsyncClient(base_url=self.cfg.webui_url()) as probe:
+                response = await probe.get("/", timeout=timeout)
+                return response.status_code == 200
+        except httpx.HTTPError:
+            return False
+
     async def wait_ready(self, timeout: float | None = None) -> bool:
-        """Wait until the sidecar answers ANY HTTP response (200 counts)."""
-        assert self._proc is not None
+        """Wait until the sidecar answers its first HTTP response."""
         deadline = asyncio.get_event_loop().time() + (timeout or self.cfg.ready_timeout_s)
-        async with httpx.AsyncClient(base_url=self.cfg.upstream_origin) as probe:
-            while asyncio.get_event_loop().time() < deadline:
-                try:
-                    response = await probe.get("/", timeout=2.0)
-                    if response.status_code == 200:
-                        return True
-                except httpx.HTTPError:
-                    pass
-                await asyncio.sleep(0.5)
+        while asyncio.get_event_loop().time() < deadline:
+            if await self._probe():
+                return True
+            await asyncio.sleep(0.5)
         return False
 
     async def stop(self) -> None:
@@ -205,183 +231,38 @@ class ChatUISidecar:
         self._proc = None
 
 
-def create_chat_router(
+def create_chat_link_router(
     sidecar: ChatUISidecar,
     config: ChatUIConfig | None = None,
     *,
-    # Dependency-injected upstream connector for the WS tunnel (tests).
-    ws_connect: Callable[[str], Coroutine[Any, Any, Any]] | None = None,
+    # Dependency-injected readiness probe (tests).
+    probe: Callable[[ChatUIConfig], Coroutine[Any, Any, bool]] | None = None,
 ) -> APIRouter:
-    """Build the daemon-side /chat router: a prefix-stripping reverse proxy.
+    """Build the daemon-side /chat router: a pointer, not a proxy.
 
-    - /chat/{…} HTTP  → prefix-stripped proxy to the Open WebUI origin.
-    - /chat/{…} WS    → WebSocket tunnel (same path upstream), e.g.
-                        /chat/ws/socket.io.
-    - Cold sidecar    → 503 "starting" page, never an auth wall.
+    - sidecar up   → 307 redirect to the Open WebUI origin (own port).
+    - sidecar down → 503 "starting" HTML page that auto-retries.
     """
     cfg = config or sidecar.cfg
     router = APIRouter()
 
-    @router.api_route(cfg.chat_prefix + "/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-    async def proxy(path: str, request: Request) -> Response:
-        return await _proxy_request_shared(cfg, request, path, rewrite_spa_base=True)
+    async def _ready() -> bool:
+        if probe is not None:
+            return await probe(cfg)
+        return await sidecar._probe()
 
-    @router.get(cfg.chat_prefix)
-    async def chat_root(request: Request) -> Response:
-        return await _proxy_request_shared(cfg, request, path="", rewrite_spa_base=True)
+    async def link(path: str = "") -> Response:
+        if await _ready():
+            return RedirectResponse(cfg.chat_url(path), status_code=307)
+        return HTMLResponse(_STARTING_PAGE, status_code=503)
 
-    @router.websocket(cfg.chat_prefix + "/{path:path}")
-    async def ws_tunnel(path: str, websocket: WebSocket) -> None:
-        await _tunnel_ws(websocket, cfg, "/" + path, ws_connect)
+    @router.get(CHAT_PREFIX)
+    @router.head(CHAT_PREFIX)
+    async def chat_root() -> Response:
+        return await link()
 
-    return router
-
-
-def create_chat_ui_fallback(
-    sidecar: ChatUISidecar,
-    config: ChatUIConfig | None = None,
-    *,
-    ws_connect: Callable[[str], Coroutine[Any, Any, Any]] | None = None,
-) -> APIRouter:
-    """Root-absolute fallback for the Open WebUI frontend (registered LAST).
-
-    Open WebUI's built SPA references root-absolute paths (``/static/...``,
-    ``/api/...``, ``/ws/socket.io``, …), so while it is served under ``/chat``
-    the browser still hits the daemon origin at the root. This router forwards
-    exactly those namespaces to the sidecar. It MUST be included after every
-    daemon route: Starlette matches in registration order, so all daemon
-    routes (``/api/state``, ``/api/usage``, ``/v1/...``, the dashboard, …)
-    keep precedence and only unmatched WebUI paths fall through.
-    """
-    cfg = config or sidecar.cfg
-    router = APIRouter()
-
-    for prefix in WEBUI_HTTP_PREFIXES:
-        @router.api_route(prefix + "{rest:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"])
-        async def http_fallback(rest: str, request: Request, _prefix: str = prefix) -> Response:
-            return await _proxy_request_shared(cfg, request, _prefix.lstrip("/") + rest)
-
-    for exact in WEBUI_HTTP_EXACT:
-        @router.api_route(exact, methods=["GET", "HEAD", "OPTIONS"])
-        async def http_exact(request: Request, _exact: str = exact) -> Response:
-            return await _proxy_request_shared(cfg, request, _exact.lstrip("/"))
-
-    for prefix in WEBUI_WS_PREFIXES:
-        @router.websocket(prefix + "{rest:path}")
-        async def ws_fallback(rest: str, websocket: WebSocket, _prefix: str = prefix) -> None:
-            await _tunnel_ws(websocket, cfg, "/" + _prefix.lstrip("/") + rest, ws_connect)
-
-    # Catch-all, registered after everything else in this router. Open WebUI's
-    # SPA hardcodes a few root-absolute full-page jumps (``window.location.href
-    # = "/auth?..."`` on session loss, OAuth callbacks, …), which bypass the
-    # SvelteKit router base and land on daemon 404s. A browser navigation to an
-    # otherwise-unknown path is bounced into the /chat prefix, where the SPA
-    # then handles it client-side. Non-browser requests keep the JSON 404.
-    @router.api_route("/{path:path}", methods=["GET", "HEAD"])
-    async def html_bounce(path: str, request: Request) -> Response:
-        if "text/html" not in request.headers.get("accept", ""):
-            raise HTTPException(status_code=404, detail="Not Found")
-        target = cfg.chat_prefix + "/" + path
-        if request.url.query:
-            target += "?" + request.url.query
-        return RedirectResponse(target, status_code=307,
-                                 headers={"cache-control": "no-store"})
+    @router.get(CHAT_PREFIX + "/{path:path}")
+    async def chat_deep(path: str) -> Response:
+        return await link(path)
 
     return router
-
-
-# SvelteKit injects the client-router base into the served HTML as
-# ``__sveltekit_<hash> = { base: "" }``. Under /chat it must become "/chat".
-_SPA_BASE_RE = re.compile(rb'(__sveltekit_[0-9a-z]+\s*=\s*\{\s*base:\s*)""')
-
-
-def _rewrite_spa_base(data: bytes, prefix: str) -> bytes:
-    """Point the SvelteKit client router at the /chat prefix (HTML only)."""
-    return _SPA_BASE_RE.sub(rb'\g<1>"' + prefix.encode() + rb'"', data, count=1)
-
-
-async def _proxy_request_shared(cfg: ChatUIConfig, request: Request, path: str,
-                                rewrite_spa_base: bool = False) -> Response:
-    """Proxy core shared by the /chat router and the root fallback.
-
-    - forwards the browser's Host header (upstream vhosts/fences key off it),
-    - forwards the RAW query string (combo/asset URLs must survive verbatim),
-    - strips content-encoding on buffered bodies (httpx already decoded them),
-    - rewrites the SvelteKit base in HTML when serving under /chat,
-    - cold sidecar → 503 "starting" page.
-    """
-    headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_HEADERS}
-    headers["host"] = request.headers["host"]
-    client = httpx.AsyncClient(base_url=cfg.upstream_origin, timeout=httpx.Timeout(90.0))
-    body = await request.body() if request.method not in ("GET", "HEAD") else None
-    url = "/" + path
-    if request.url.query:
-        url += "?" + request.url.query
-    upstream_request = client.build_request(request.method, url, headers=headers, content=body)
-    try:
-        upstream_response = await client.send(upstream_request, stream=True)
-    except httpx.HTTPError:
-        await client.aclose()
-        return Response("ecoGPT chat is starting; retry in a moment.", status_code=503)
-    content_type = upstream_response.headers.get("content-type", "")
-    if "text/event-stream" in content_type:
-        # Genuinely incremental: relay raw bytes as they arrive.
-        return StreamingResponse(
-            upstream_response.aiter_raw(),
-            status_code=upstream_response.status_code,
-            headers={k: v for k, v in upstream_response.headers.items() if k.lower() not in _HOP_HEADERS},
-            background=BackgroundTask(client.aclose),
-        )
-    # Bufferable JSON/HTML/etc: read fully, then close upstream deterministically.
-    data = await upstream_response.aread()
-    await upstream_response.aclose()
-    await client.aclose()
-    if rewrite_spa_base and "text/html" in content_type:
-        data = _rewrite_spa_base(data, cfg.chat_prefix)
-    return Response(data, status_code=upstream_response.status_code,
-                    headers={k: v for k, v in upstream_response.headers.items()
-                             # Response() recomputes length; content-encoding must go too:
-                             # httpx already decoded the body (aread), forwarding the
-                             # gzip/br header makes browsers fail with
-                             # ERR_CONTENT_DECODING_FAILED
-                             if k.lower() not in _HOP_HEADERS | {"content-length", "content-encoding"}})
-
-
-async def _tunnel_ws(websocket: WebSocket, cfg: ChatUIConfig, upstream_path: str,
-                     ws_connect: Callable[[str], Coroutine[Any, Any, Any]] | None) -> None:
-    """WebSocket tunnel core: relays frames between browser and sidecar."""
-    connector = ws_connect or _default_ws_connect
-    await websocket.accept()
-    upstream = await connector(cfg.upstream_origin + upstream_path)
-    pump_down = asyncio.create_task(_pump_ws(upstream, websocket))
-    pump_up = asyncio.create_task(_pump_ws_reverse(websocket, upstream))
-    done, _pending = await asyncio.wait({pump_down, pump_up}, return_when=asyncio.FIRST_COMPLETED)
-    for task in done:
-        if task.exception() is not None:
-            log.warning("chat-UI WS tunnel ended: %s", task.exception())
-    for task in (pump_down, pump_up):
-        task.cancel()
-    await websocket.close()
-
-
-def _default_ws_connect(url: str) -> Coroutine[Any, Any, Any]:
-    """Default upstream WS connector (real protocol client)."""
-    import websockets  # imported late: only needed when a WS client attaches
-
-    return websockets.connect(url)
-
-
-async def _pump_ws(source: Any, target: WebSocket) -> None:
-    """Rebyte-relay: upstream WS -> browser WS."""
-    async for message in source:
-        if isinstance(message, bytes):
-            await target.send_bytes(message)
-        else:
-            await target.send_text(message)
-
-
-async def _pump_ws_reverse(source: WebSocket, target: Any) -> None:
-    """Browser WS -> upstream WS (text frames only, per the socket.io relay)."""
-    while True:
-        message = await source.receive_text()
-        await target.send(message)
