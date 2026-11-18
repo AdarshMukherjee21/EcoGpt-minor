@@ -1,144 +1,227 @@
 # ecoGPT
 
-A local daemon that sits between AI clients (Claude Code, Claude Desktop, the
-ecoGPT chat harness) and model gateways. Every model request flows through one
-pipeline: **identify → ledger → compress → route → observe → relay**, so the
-dashboard sees green metrics, token usage, cost and full session traceability.
+A local AI-gateway daemon that sits between your model clients and your model
+providers. Claude Code, Claude Desktop, OpenAI-compatible apps and the built-in
+ecoGPT chat UI all speak to one local proxy — and every model request flows
+through a single observable pipeline:
 
-## Endpoints
+**identify → ledger → compress → route → measure → relay**
 
-Ingress (all served on one proxy):
+Along the way ecoGPT tracks what it did and what it cost the planet: token
+usage, session timelines, per-call traces, energy and environmental impact
+(energy, CO₂e, water, abiotic resource use) — with zero dependence on what
+your upstream provider reports.
 
-| Endpoint                                | Format                  |
-| --------------------------------------- | ----------------------- |
-| `POST /v1/messages` (+ `/count_tokens`) | Anthropic Messages      |
-| `POST /v1/chat/completions`             | OpenAI Chat Completions |
-| `POST /v1/responses`                    | OpenAI Responses        |
-| `GET /v1/models`                        | Anthropic shape         |
+- One gateway, three dialects: Anthropic Messages, OpenAI Chat Completions and
+  OpenAI Responses — any combination of client and provider format works,
+  including SSE streaming.
+- Prompt compression (Headroom sidecar), applied adaptively per request.
+- Optional agentic tier router (System One): a classifier picks the right
+  model for each turn of the auto model — cheap executors for easy asks,
+  capable planners for hard ones — with warm-cache-friendly routing.
+- Green metrics on every request, via EcoLogits compute core: energy (kWh),
+  GWP (kgCO₂e), water (L), ADPe (kgSbeq), primary energy (MJ).
+- An all-in-one local dashboard: configuration, routing, live trace, usage and
+  environmental rollups. Plus a bundled chat UI (Open WebUI) at `/chat`.
+- Local-first security posture: the daemon binds loopback only; your provider
+  credentials never leave `data/config.json`.
 
-Requests are routed per model: `claude-*` → gateway `/v1/messages` (passthrough),
-`gpt-*` → gateway `/v1/responses` (translated from Anthropic Messages), with
-per-model `route_overrides` and `model_overrides` (aliasing) in the dashboard.
-Ingress in any format is normalized to Anthropic Messages, runs through the
-pipeline, and is re-encoded back to the caller's format — streaming (SSE)
-included.
+## Quickstart
 
-## Components
-
-- `proxy/` — FastAPI app on `http://127.0.0.1:18090`, SQLite usage ledger with
-  impact estimates (pinned `ecologits==0.10.2` compute core for energy/GWP/water/
-  ADPe/primary energy; the `wh_per_output_token` override table in
-  `data/green_factors.json` keeps the factor arithmetic for overridden rows),
-  JSONL session ledger, Headroom compression sidecar (managed child process on
-  port 8787, `headroom-ai[proxy]`).
-- `dashboard/index.html` — single-file zero-dependency dashboard served at `/`:
-  gateway + key, model exposure and routing, one-click **Claude Code** and
-  **Claude Desktop** configuration (with byte-for-byte backup/restore),
-  feature flags, green metrics rollups, sidecar controls, usage and session
-  timelines.
-- `tests/` — pytest suite; `tools/capture_probe.py` — standalone logging
-  forwarder for client-behavior probing.
-
-## Run
+Requires Python **3.13+** (uv recommended, not required).
 
 ```sh
-uv venv --python 3.13 .venv
-uv pip install --python .venv/Scripts/python.exe -r requirements.txt
-.venv/Scripts/python.exe -m proxy
+git clone <this-repo> ecoGPT && cd ecoGPT
+scripts/setup          # creates .venv and installs pinned requirements
+.venv/Scripts/python.exe -m proxy    # Windows
+# .venv/bin/python -m proxy          # macOS / Linux
 ```
 
-Dashboard at `http://127.0.0.1:18090/`. Tests: `.venv/Scripts/python.exe -m pytest`.
+Windows note: run the commands from Git Bash (the `scripts/setup` and run docs
+assume it). The venv layout is auto-detected on POSIX.
 
-Config lives in `data/config.json` (editable live from the dashboard; the
-ablation harness may rewrite `features`/`green` between requests — dashboard
-saves respect on-disk changes).
+When the daemon starts:
 
-## Routing: System One tier router
+| Surface | URL |
+| --- | --- |
+| Dashboard | `http://127.0.0.1:18090/` |
+| Chat UI (Open WebUI) | `http://127.0.0.1:18090/chat` → redirects to `http://127.0.0.1:18091` |
+| Anthropic Messages | `POST http://127.0.0.1:18090/v1/messages` |
+| OpenAI Chat Completions | `POST http://127.0.0.1:18090/v1/chat/completions` |
+| OpenAI Responses | `POST http://127.0.0.1:18090/v1/responses` |
+| Models listing | `GET http://127.0.0.1:18090/v1/models` |
+| Admin API | `/api/state`, `/api/settings`, `/api/usage`, `/api/trace/...`, ... |
 
-When a client selects an **auto model** (default id `eco-auto`), the request is
-classified by a **System One decision model** (Jev API: `POST <endpoint_url>`
-with `{model, state, questions}` returning `{answers: {difficulty: {choice,
-probabilities, confidence}}}`) and dispatched to the matching tier's model.
+First thing to do: open the dashboard → **Setup & Providers**, point it at your
+gateway (up to three providers: name, base URL, API key) and expose the models
+you want clients to see. Claude Code and Claude Desktop can be pointed at
+ecoGPT with one click each (with automatic backup/restore of their existing
+config).
 
-- **Tier ladder** (user-configurable count 2–26, ordered easiest → most
-  capable): each tier has a `id`, a **prompt-kind description** (classifier
-  criteria text) and exactly **one model**. The shipped default ladder is
-  goldfish (executor) / elephant (planner) with descriptions from the chat
-  harness proposal; tiers, descriptions and models are editable in the Router
-  settings tab.
-- **Rules**: confidence-floor escalation (+1 tier when classification
-  confidence < 0.45), long-context floor (prompts over the 256k advertised
-  window jump to the long-context floor tier), **warmth hold** (no tier
-  downgrade within 120 s) and **cache stickiness** (borderline flips within
-  300 s stay on the previous tier so provider KV/prompt caches stay hot).
-  All toggles/Windows live in Router settings; warmth and stickiness are ON
-  by default.
-- **Generic endpoints**: the classifier is any well-formed SystemOne URL
-  (Ollama `/v1/systemone` and OpenRouter `/api/alpha/decisions` ship as
-  presets); credentials (bearer/x-api-key) are stored server-side in
-  `data/config.json` and never travel in request bodies or dashboard payloads.
-  Sending prompts to a **non-loopback** endpoint shows a persistent egress
-  notice in the dashboard.
-- **Traceability**: every routing decision is appended to the per-session JSONL
-  ledger (`data/sessions/`, DeepSeek-style) — requested auto model, chosen
-  tier, target model, confidence, routing reason, warmth/stickiness flags —
-  and to the usage DB (`router_tier`, `router_reason`, `router_target_model`,
-  `router_confidence`, ...), so dashboards and exports can show why each turn
-  was routed the way it was.
+The chat UI is a pinned Open WebUI spawned and managed by the daemon on its
+own loopback port (18091 by default, `chat_ui_port` setting). It uses the
+gateway as its only model backend — everything you chat with it flows through
+the same pipeline, ledger and green accounting. Sign-in is disabled
+(`WEBUI_AUTH=False`); on first use it provisions a local `admin@localhost`
+user. See `docs/chat-ui.md`.
 
-## Green metrics (Phase 2)
+Requests are routed per model id by default (`claude-*` → Anthropic-style
+upstream, `gpt-*`/others → Responses/Chat-style upstream), with per-model
+`route_overrides` and aliasing `model_overrides` configurable in the dashboard.
 
-Defaults are explicit scenarios, never inferred data. When the `green_metrics`
-feature flag is on, `proxy/green_impact.py` computes five impact categories per
-request — energy (kWh, min/mean/max), GWP (kgCO₂e, min/mean/max), water (L),
-ADPe (kgSbeq) and primary energy (MJ) — from the active/total parameters of the
-_effective upstream model_, the observed request duration and, when streaming
-observed them, TPS and time-to-first-token, via EcoLogits'
-`compute_llm_impacts()`.
+## Configuration
 
-- **Model parameters** resolve in order: per-model override (dashboard →
-  `data/green_overrides.json`, merged on mtime change) → factor-table row →
-  exact match in the pinned EcoLogits catalogue (`data/ecologits/`, committed
-  for reproducibility) → `unconfigured_model`. No fuzzy matches: a provider
-  serving a model need not own it.
-- **Per-model expert profiles** (Settings → Green metrics): an EcoLogits
-  Calculator expert-mode card per exposed model — Active/Total parameters (B),
-  average TPS and TTFT (used only when a stream did not observe them), plus the
-  datacenter scenario (PUE, on-site WUE, location, and grid-mix GHG/abiotic/
-  primary/water factors). Blank datacenter fields fall back to the region
-  settings and the EcoLogits electricity dataset (displayed with their source).
-- **Estimation for unknown models**: a stratified IKP probe run (7 tiers,
-  public calibration from `data/ikp/`, judge model of your choice) estimates a
-  model's knowledge-equivalent size — free-tier friendly (adjustable pacing
-  between calls, exponential retry with Retry-After support for HTTP 429) and
-  fully resumable: per-probe progress persists to `data/green_estimation.json`,
-  a stop/failure/crash leaves a resumable state (resume via the manual
-  **Continue** button, never a rerun from scratch), and an estimate is applied
-  only when explicitly accepted (**Apply estimate** records an explicit
-  `ikp_estimate` scenario — knowledge-equivalent capacity is not a verified
-  weight count).
-- **Dual path**: a row with a `wh_per_output_token` override keeps the original
-  factor arithmetic (`proxy/green.py`) — overrides keep their meaning. Rows
-  with parameter counts use the EcoLogits core. Input and cache-read tokens are
-  folded into the effective output count on both paths; `embodied_share` applies
-  to the factor path only (the library models embedded impacts itself).
-- **Fail closed**: unknown models, missing usage and calculation errors are
-  recorded with an `impact_status` (`unconfigured_model`, `missing_usage`,
-  `_calculation_error_`) and never contribute numbers to totals. The dashboard
-  shows the environmental coverage ratio.
-- **Provenance on every estimate**: the impact record and dashboard always pair
-  water/ADPe/primary-energy numbers with an `impact_provenance` string (model
-  basis + electricity dataset revision + "PUE/WUE: region scenario"). Region
-  grid/PUE come from the dashboard's Green settings; electricity-mix water,
-  ADPe and PE come from the vendored EcoLogits dataset with a World fallback.
-- The usage DB and the JSONL ledger store historical estimates as fixed
-  snapshots; changing settings never re-scores past requests.
+Everything user-configurable lives in `data/config.json` and is edited live
+from the dashboard (no daemon restart needed, except for a few noted cases):
 
-## Status / next phases
+- Providers and exposed models, per-model provider mapping/stickiness.
+- Router ladder and classifier endpoint (see below).
+- Compression (Headroom) settings; the compression sidecar (port 8787) is a
+  managed child process — no separate install or launch step.
+- Green-metrics scenarios and per-model profiles.
+- Desktop picker aliases for Claude Desktop, feature flags, chat UI on/off
+  and its port.
 
-- Done: proxy pipeline, all three ingress formats, Claude Code + Desktop
-  one-click config, green metrics (EcoLogits core, per-model expert profiles,
-  IKP estimation), session ledger, dashboard.
-- TODO: formal cost model (pricing tables — cost is currently scraped from
-  gateway headers), router/compression config polish, ecoGPT chat harness
-  integration.
+The `data/` directory also holds the SQLite usage DB, the JSONL session
+ledger (`data/sessions/`), green factors/overrides, the vendored EcoLogits
+catalogue (`data/ecologits/`, committed for reproducible impact math), IKP
+calibration data (`data/ikp/`) and the Open WebUI data dir (`data/openwebui/`).
+Deleting `data/` resets everything to defaults on next boot.
+
+## Pipeline, in order
+
+1. **Identify** — the request's session identity (client, session key, request
+   id) is pinned for tracing.
+2. **Ledger** — an entry is opened in the JSONL session ledger
+   (schema v2) and the usage DB (SQLite).
+3. **Compress** — prompts run through the local Headroom sidecar
+   (`headroom-ai[proxy]`); structural-only by default, ML (Kompress) lossless
+   compression when its model cache is present.
+4. **Route** — either straight to the model's provider, or through the System
+   One tier router when the client selected the auto model (`eco-auto`).
+5. **Measure** — tokens, durations, TPS/TTFT are observed from the actual
+   stream; environmental impact is computed per request and snapshotted.
+6. **Relay** — responses (including SSE) are re-encoded into the client's
+   requested dialect.
+
+## System One tier router
+
+Clients can select the auto model (default id `eco-auto`) instead of a
+specific model. ecoGPT then asks a classifier decision model — **any**
+well-formed System One endpoint (Ollama and OpenRouter presets ship built-in)
+which tier the prompt needs, and dispatches to that tier's model:
+
+- A configurable ordered ladder (2–26 tiers, easiest → most capable), each
+  tier with a prompt-kind description and exactly one model
+  (default ladder: `goldfish` executor / `elephant` planner).
+- Guards: confidence-floor escalation, long-context floor, a warmth hold
+  (no downgrades within 120 s) and cache-stickiness (borderline flips within
+  300 s stay put to keep provider prompt caches hot). All toggleable.
+- Full traceability: tier, target model, confidence and routing reason are
+  recorded per turn in the ledger and usage DB, and visible in the dashboard's
+  Live Trace.
+
+Classifier credentials are stored server-side in `data/config.json`, masked in
+every dashboard/API view, and never travel in request bodies.
+
+## Green metrics
+
+When the `green_metrics` feature flag is on, every request gets an
+environmental impact record computed by EcoLogits (`ecologits==0.10.2`
+compute core, catalogue vendored in-repo):
+
+- Five categories: energy (kWh), GWP (kgCO₂e), water (L), ADPe (kgSbeq),
+  primary energy (MJ) — from the effective upstream model's parameters, the
+  observed request duration, and TPS/TTFT when streamed.
+- Model resolution is explicit: per-model expert profile → factor-table row →
+  exact catalogue match → `unconfigured_model` (fail closed; no fuzzy
+  matches, no invented numbers).
+- Expert profiles per model: active/total parameters, average TPS/TTFT, and a
+  datacenter scenario (PUE, on-site WUE) backed by EcoLogits electricity
+  datasets with a World fallback; every estimate carries a provenance string.
+- Unknown models can be sized with a resumable, free-tier-friendly IKP
+  estimation run (runs from Settings → Green metrics, persists progress,
+  applied only on explicit acceptance).
+- Historical records are immutable snapshots: changing settings never
+  re-scores past requests. The dashboard shows coverage (share of requests
+  with real numbers) alongside totals.
+
+## Observability
+
+- **Live Trace** in the dashboard: per-session timeline of every call —
+  what compressed, the router's decision (tier, model, confidence), the
+  upstream provider, streaming shape, and impact.
+- **Sessions**: request-level ledgers grouped by client session, DeepSeek-style
+  JSONL under `data/sessions/`.
+- **Usage**: SQLite at `data/usage.db` — tokens, models, providers, router
+  columns, impact columns; CSV export from the dashboard.
+- **Green rollups**: daily and per-model rollups surfaced in the dashboard.
+
+`tools/capture_probe.py` is a standalone logging forwarder for probing client
+behavior if you want to inspect what a specific client sends.
+
+## Tests
+
+```sh
+.venv/Scripts/python.exe -m pytest -q     # or .venv/bin/python -m pytest
+```
+
+276 tests cover the translation layers (all three dialects × streaming),
+routing, router guards, green metrics arithmetic and provenance, ledger
+schemas, settings round-trips, sidecar wiring and the chat-UI integration.
+
+## Project layout
+
+```
+proxy/                    FastAPI daemon package
+  app.py                  endpoints, settings, telemetry surfaces
+  chat_ui.py              Open WebUI sidecar lifecycle + /chat link
+  config.py               settings dataclass + data/config.json round-trip
+  router_engine.py        System One classifier + tier dispatch
+  green_impact.py         EcoLogits impact core + provenance
+  green_estimate.py       resumable IKP estimation runs
+  ledger.py               JSONL session ledger (schema v2)
+  translate_*.py          Anthropic <-> Chat <-> Responses translation
+  sidecar*.py              Headroom sidecar spawn/client
+  claude_config.py         Claude Code one-click config
+  claude_desktop.py        Claude Desktop apply/backup/restore
+dashboard/index.html      single-file dashboard served at /
+data/                     config, usage DB, ledgers, vendored datasets
+docs/                     chat UI runbook, session-probe findings
+scripts/setup             venv + pinned install
+tests/                    pytest suite
+pyproject.toml            pip-installable package (console script: ecogpt)
+```
+
+## Security model
+
+EcoGPT is a **local, loopback-only** deployment, by design:
+
+- The daemon, the Headroom sidecar and the Open WebUI sidecar all bind
+  `127.0.0.1` only.
+- Provider and classifier API keys live in `data/config.json` and are masked in
+  every dashboard and API view.
+- The chat UI runs with sign-in disabled (single local-user posture).
+- Do not expose the daemon port to a network without adding auth/HTTPS at a
+  reverse proxy — the dashboard and admin API are not authentication-gated.
+  Multi-user hosting is planned for the packaging phase
+  (`docs/chat-ui.md` has notes).
+
+## Status
+
+Working: the full pipeline, all three ingress dialects, Claude Code/Desktop
+one-click, green metrics core + expert profiles + IKP estimation, tier router,
+trace/sessions, dashboard, chat UI.
+
+Planned (in flight): packaging for external users (single-command setup /
+GitHub release / pip), formal cost model (headers-scraped today), multi-user
+hosting posture.
+
+## Licenses
+
+- ecoGPT's own code: your repo license.
+- Open WebUI (bundled as the chat UI): "Open WebUI Modified License" — not
+  OSI-licensed; keep the deployment local/review the license before hosted
+  commercial use (details in `docs/chat-ui.md`).
+- EcoLogits (compute core + datasets) and `headroom-ai` are dependencies
+  installed from PyPI under their own licenses.
